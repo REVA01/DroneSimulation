@@ -103,7 +103,7 @@ public class DroneBrain : MonoBehaviour
         for (int i = 0; i < director.squad.Count; i++)
         {
             DroneDirector.DroneSquadMember peer = director.squad[i];
-            if (peer == null || peer == member || peer.droneObject == null || peer.tacticalWaypoint == null)
+            if (peer == null || peer == member || peer.droneObject == null || !peer.droneObject.activeInHierarchy || peer.tacticalWaypoint == null)
                 continue;
 
             float peerDist = Vector3.Distance(peer.droneObject.transform.position, peer.tacticalWaypoint.position);
@@ -117,6 +117,13 @@ public class DroneBrain : MonoBehaviour
         if (peerIsLagging && distanceToWaypoint < 1.0f && director.currentPhase == CombatPhase.FollowTarget)
         {
             targetSpeed = baseSpeed * 0.75f;
+        }
+
+        // Apply slowdown if this drone is currently taking damage
+        DroneHealth droneHealth = member.droneObject != null ? member.droneObject.GetComponent<DroneHealth>() : null;
+        if (droneHealth != null && droneHealth.IsTakingDamage)
+        {
+            targetSpeed *= droneHealth.damageSlowdownMultiplier;
         }
 
         currentFlightSpeed = Mathf.MoveTowards(member.followTarget.moveSpeed, targetSpeed, acceleration * dt);
@@ -396,7 +403,7 @@ public class DroneDirector : MonoBehaviour
         int count = 0;
         for (int i = 0; i < squad.Count; i++)
         {
-            if (squad[i] != null && squad[i].droneObject != null)
+            if (squad[i] != null && squad[i].droneObject != null && squad[i].droneObject.activeInHierarchy)
             {
                 sum += squad[i].droneObject.transform.position;
                 count++;
@@ -717,7 +724,9 @@ public class DroneDirector : MonoBehaviour
             {
                 DroneSquadMember mA = squad[i];
                 DroneSquadMember mB = squad[j];
-                if (mA == null || mB == null || mA.droneObject == null || mB.droneObject == null) continue;
+                if (mA == null || mB == null || 
+                    mA.droneObject == null || mB.droneObject == null ||
+                    !mA.droneObject.activeInHierarchy || !mB.droneObject.activeInHierarchy) continue;
 
                 Vector3 posA = mA.droneObject.transform.position;
                 Vector3 posB = mB.droneObject.transform.position;
@@ -745,7 +754,7 @@ public class DroneDirector : MonoBehaviour
 
         for (int i = 0; i < squad.Count; i++)
         {
-            if (squad[i] != null && squad[i].droneObject != null)
+            if (squad[i] != null && squad[i].droneObject != null && squad[i].droneObject.activeInHierarchy)
             {
                 float dist = Vector3.Distance(squad[i].droneObject.transform.position, target.position);
                 if (dist <= strikeDistance)
@@ -757,11 +766,29 @@ public class DroneDirector : MonoBehaviour
         }
     }
 
-    // Eliminates the target and transitions to the post-combat sequence.
+    // Executes an attack strike on the target (cannon).
     private void ExecuteStrike(Transform attacker, Transform victim)
     {
         lastKnownTargetPos = victim.position;
         lastKnownTargetForward = victim.forward;
+
+        // Check if victim (cannon) has CanonHealth component
+        CanonHealth canonHealth = victim.GetComponentInParent<CanonHealth>();
+        if (canonHealth == null) canonHealth = victim.GetComponentInChildren<CanonHealth>();
+
+        if (canonHealth != null)
+        {
+            canonHealth.TakeDamage(1);
+
+            if (!canonHealth.IsDestroyed)
+            {
+                // Cannon survived! Drones disengage, retreat, and regroup for another attack run
+                EnterPhase(CombatPhase.DisengageAndReposition);
+                return;
+            }
+        }
+
+        // Cannon destroyed after 5 attacks (or if no CanonHealth is attached)
         targetEliminated = true;
         victim.gameObject.SetActive(false);
         SetupVictorySequence();
@@ -1066,7 +1093,12 @@ public class DroneDirector : MonoBehaviour
     // Assigns follow formation slots based on left-to-right lateral ordering.
     public void AssignOptimalFollowSlots()
     {
-        if (squad.Count < 2) return;
+        if (squad.Count == 0) return;
+        if (squad.Count == 1)
+        {
+            if (squad[0] != null) squad[0].assignedFormationSlotIndex = 0;
+            return;
+        }
 
         Vector3 squadCentroid = GetSquadCentroid();
         Vector3 toTarget = lastKnownTargetPos - squadCentroid;
@@ -1496,6 +1528,7 @@ public class DroneDirector : MonoBehaviour
             followTarget.targetBox = waypointObj.transform;
             followTarget.stopDistance = 0.5f;
             followTarget.moveSpeed = cruiseSpeed;
+            followTarget.requireTargetLock = false;
 
             FlightControlSystem fcs = droneObj.GetComponent<FlightControlSystem>();
             if (fcs != null) fcs.enabled = true;
@@ -1582,5 +1615,79 @@ public class DroneDirector : MonoBehaviour
             }
         }
         squad.Clear();
+    }
+
+    /// <summary>
+    /// Called when a squad drone is destroyed.
+    /// Decrements droneCount by 1, cleans up waypoints, and reorganizes the remaining squad.
+    /// </summary>
+    public void OnDroneDestroyed(GameObject destroyedDrone)
+    {
+        if (destroyedDrone == null) return;
+
+        bool removed = false;
+        for (int i = squad.Count - 1; i >= 0; i--)
+        {
+            if (squad[i] == null)
+            {
+                squad.RemoveAt(i);
+                continue;
+            }
+
+            bool isMatch = (squad[i].droneObject == destroyedDrone) ||
+                           (squad[i].droneObject == null) ||
+                           (!squad[i].droneObject.activeInHierarchy) ||
+                           (destroyedDrone.transform.IsChildOf(squad[i].droneObject.transform)) ||
+                           (squad[i].droneObject.transform.IsChildOf(destroyedDrone.transform));
+
+            if (isMatch)
+            {
+                if (squad[i].tacticalWaypoint != null)
+                {
+                    if (Application.isPlaying) Destroy(squad[i].tacticalWaypoint.gameObject);
+                    else DestroyImmediate(squad[i].tacticalWaypoint.gameObject);
+                }
+
+                squad.RemoveAt(i);
+                removed = true;
+            }
+        }
+
+        if (!removed) return;
+
+        // Decrement drone count and update lastSpawnedCount so Update() doesn't respawn
+        droneCount = squad.Count;
+        lastSpawnedCount = droneCount;
+
+        // Re-index remaining squad members
+        for (int i = 0; i < squad.Count; i++)
+        {
+            if (squad[i] != null)
+            {
+                squad[i].droneIndex = i;
+                squad[i].assignedFormationSlotIndex = -1;
+            }
+        }
+
+        // Re-wire obstacle avoidance for surviving drones
+        WireIgnoredColliders();
+
+        if (squad.Count == 0)
+        {
+            Debug.Log("<color=green>[DroneDirector] ALL DRONES ELIMINATED! Victory!</color>");
+            return;
+        }
+
+        // Re-assign roles and formation slots for the surviving drones
+        if (currentPhase == CombatPhase.FollowTarget)
+        {
+            AssignOptimalFollowSlots();
+        }
+        else
+        {
+            AssignDynamicRoles();
+        }
+
+        Debug.Log($"<color=cyan>[DroneDirector] Drone destroyed! droneCount is now: {droneCount}. Active squad size: {squad.Count}</color>");
     }
 }

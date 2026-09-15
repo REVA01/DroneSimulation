@@ -6,6 +6,16 @@ public class DroneNPCFollowTarget : MonoBehaviour
     [Header("Target")]
     public Transform targetBox;
 
+    [Header("Target Lock Settings")]
+    [Tooltip("If true, the drone will ONLY follow when target is properly locked. Existence of a target alone will never make the drone start following.")]
+    public bool requireTargetLock = true;
+
+    [Tooltip("Whether the target is currently properly locked.")]
+    public bool isTargetLocked = false;
+
+    [Tooltip("Maximum distance from target before lock is automatically lost and movement stops. 0 disables distance auto-unlock.")]
+    public float autoUnlockDistance = 50f;
+
     [Header("Movement")]
     public float moveSpeed = 5f;
     public float stopDistance = 2f;
@@ -37,18 +47,56 @@ public class DroneNPCFollowTarget : MonoBehaviour
     private Vector3 _committedAvoidDir;
     private float _avoidCommitTimer;
     private bool _isAvoiding;
+    private DroneHealth _droneHealth;
+
+    private void Start()
+    {
+        // If targetBox is explicitly an FDrone, enforce target lock
+        if (targetBox != null && targetBox.name.ToLower().Contains("fdrone"))
+        {
+            requireTargetLock = true;
+        }
+    }
 
     // Steers the drone toward its target with obstacle avoidance.
     private void Update()
     {
-        if (targetBox == null)
+        // 1. Target existence alone should never make the drone start following if lock is required
+        // When unlocked (manually or automatically), movement must stop IMMEDIATELY!
+        if (requireTargetLock && !isTargetLocked)
+        {
+            StopFollowing();
             return;
+        }
+
+        if (targetBox == null)
+        {
+            StopFollowing();
+            return;
+        }
+
+        // 2. If target object itself is destroyed/inactive, automatically unlock and stop immediately
+        if (!IsTargetValid(targetBox))
+        {
+            UnlockTarget();
+            return;
+        }
 
         Vector3 toTarget = targetBox.position - transform.position;
         float distance = toTarget.magnitude;
 
-        if (distance <= stopDistance)
+        // 3. Automatic distance-based unlock: If target moved beyond autoUnlockDistance, immediately stop!
+        if (requireTargetLock && autoUnlockDistance > 0f && distance > autoUnlockDistance)
+        {
+            UnlockTarget();
             return;
+        }
+
+        if (distance <= stopDistance)
+        {
+            _currentMoveDir = Vector3.zero;
+            return;
+        }
 
         Vector3 desiredDir = toTarget.normalized;
 
@@ -75,7 +123,17 @@ public class DroneNPCFollowTarget : MonoBehaviour
             _currentMoveDir = Vector3.Slerp(_currentMoveDir, safeDir, blendSpeed * Time.deltaTime).normalized;
         }
 
-        float moveAmount = Mathf.Min(moveSpeed * Time.deltaTime, distance - stopDistance);
+        float effectiveSpeed = moveSpeed;
+        if (_droneHealth == null)
+        {
+            _droneHealth = GetComponent<DroneHealth>() ?? GetComponentInParent<DroneHealth>() ?? GetComponentInChildren<DroneHealth>();
+        }
+        if (_droneHealth != null && _droneHealth.IsTakingDamage)
+        {
+            effectiveSpeed *= _droneHealth.damageSlowdownMultiplier;
+        }
+
+        float moveAmount = Mathf.Min(effectiveSpeed * Time.deltaTime, distance - stopDistance);
         transform.Translate(_currentMoveDir * moveAmount, Space.World);
 
         ApplyFlightRotation(_currentMoveDir);
@@ -92,6 +150,9 @@ public class DroneNPCFollowTarget : MonoBehaviour
     // Rotates the drone toward movement direction with aerodynamic banking.
     private void ApplyFlightRotation(Vector3 direction)
     {
+        if (direction.sqrMagnitude < 0.001f)
+            return;
+
         Vector3 upReference = Mathf.Abs(Vector3.Dot(direction, Vector3.up)) > 0.99f
             ? transform.forward
             : Vector3.up;
@@ -198,5 +259,58 @@ public class DroneNPCFollowTarget : MonoBehaviour
             yawLeft * pitchDn * desiredDir,
             yawRight * pitchDn * desiredDir,
         };
+    }
+
+    /// <summary>
+    /// Checks whether target exists, is active in hierarchy, and is alive.
+    /// </summary>
+    public bool IsTargetValid(Transform target)
+    {
+        if (target == null) return false;
+        if (!target.gameObject.activeInHierarchy) return false;
+
+        DroneHealth health = target.GetComponent<DroneHealth>() ?? target.GetComponentInChildren<DroneHealth>() ?? target.GetComponentInParent<DroneHealth>();
+        if (health != null && (health.IsDestroyed || health.health <= 0f)) return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Locks onto a target and starts following it.
+    /// </summary>
+    public void LockTarget(Transform target)
+    {
+        targetBox = target;
+        isTargetLocked = true;
+        _isAvoiding = false;
+        _avoidCommitTimer = 0f;
+    }
+
+    /// <summary>
+    /// Unlocks target and stops following immediately.
+    /// </summary>
+    public void UnlockTarget()
+    {
+        isTargetLocked = false;
+        StopFollowing();
+    }
+
+    /// <summary>
+    /// Immediately stops all following behavior and ends tracking.
+    /// </summary>
+    public void StopFollowing()
+    {
+        isTargetLocked = false;
+        _currentMoveDir = Vector3.zero;
+        _committedAvoidDir = Vector3.zero;
+        _avoidCommitTimer = 0f;
+        _isAvoiding = false;
+
+        Rigidbody rb = GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
     }
 }
