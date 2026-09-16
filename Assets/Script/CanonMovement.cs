@@ -79,13 +79,11 @@ public class CanonMovement : MonoBehaviour
                                  laserTimer > 0f;
 
     /// <summary>
-    /// Called immediately when a drone is destroyed by the laser or health reaches 0.
-    /// If the player is still holding fire (F or Left Click), the laser remains active.
-    /// If the fire key is not held, the laser turns off immediately.
+    /// Clears the currently targeted drone reference and removes its laser targeting state.
     /// </summary>
-    public void OnTargetDroneDestroyed(GameObject destroyedDrone)
+    public void ClearTargetDrone(GameObject targetToClear = null)
     {
-        if (currentTargetDrone == destroyedDrone || (currentTargetDroneHealth != null && currentTargetDroneHealth.gameObject == destroyedDrone))
+        if (targetToClear == null || currentTargetDrone == targetToClear)
         {
             if (currentTargetDroneHealth != null)
             {
@@ -93,6 +91,31 @@ public class CanonMovement : MonoBehaviour
                 currentTargetDroneHealth = null;
             }
             currentTargetDrone = null;
+        }
+    }
+
+    /// <summary>
+    /// Synchronizes currently targeted drone from AimAssist or external caller.
+    /// </summary>
+    public void SetTargetDrone(GameObject newTarget)
+    {
+        UpdateTargetedDrone(newTarget);
+    }
+
+    /// <summary>
+    /// Called immediately when a drone is destroyed by the laser or health reaches 0.
+    /// Wipes all target references in both CanonMovement and AimAssist.
+    /// If the player is still holding fire (F or Left Click), the laser remains active.
+    /// If the fire key is not held, the laser turns off immediately.
+    /// </summary>
+    public void OnTargetDroneDestroyed(GameObject destroyedDrone)
+    {
+        ClearTargetDrone(destroyedDrone);
+
+        AimAssist aim = GetComponent<AimAssist>() ?? GetComponentInParent<AimAssist>() ?? GetComponentInChildren<AimAssist>();
+        if (aim != null)
+        {
+            aim.OnDroneDestroyedOrDisabled(destroyedDrone);
         }
 
         bool isKeyHeld = Input.GetKey(fireKey) || (allowMouseFire && Input.GetMouseButton(0));
@@ -328,9 +351,20 @@ public class CanonMovement : MonoBehaviour
 
     /// <summary>
     /// Checks for user fire key input (F or Left Click) and manages laser beam triggering and duration.
+    /// Also checks for explicit unselect (Right Click or custom unselect key).
     /// </summary>
     private void HandleLaserFiring()
     {
+        AimAssist aim = GetComponent<AimAssist>() ?? GetComponentInParent<AimAssist>() ?? GetComponentInChildren<AimAssist>();
+        if (Input.GetMouseButtonDown(1) || (aim != null && Input.GetKeyDown(aim.explicitUnselectKey)))
+        {
+            ClearTargetDrone();
+            if (aim != null)
+            {
+                aim.ReleaseCurrentTarget("Explicit unselect input");
+            }
+        }
+
         bool isKeyDown = Input.GetKeyDown(fireKey) || (allowMouseFire && Input.GetMouseButtonDown(0));
         bool isKeyHeld = Input.GetKey(fireKey) || (allowMouseFire && Input.GetMouseButton(0));
 
@@ -431,13 +465,13 @@ public class CanonMovement : MonoBehaviour
             lineRenderer.enabled = false;
         }
 
-        // Immediately remove laser targeting on the tracked drone
-        if (currentTargetDroneHealth != null)
+        ClearTargetDrone();
+
+        AimAssist aim = GetComponent<AimAssist>() ?? GetComponentInParent<AimAssist>() ?? GetComponentInChildren<AimAssist>();
+        if (aim != null)
         {
-            currentTargetDroneHealth.SetLaserTargeted(false);
-            currentTargetDroneHealth = null;
+            aim.ClearCurrentTargetOnFireStop();
         }
-        currentTargetDrone = null;
 
         ClearAllDronesLaserTargeting();
     }
@@ -558,8 +592,8 @@ public class CanonMovement : MonoBehaviour
         {
             hitDrone = droneRoot;
 
-            AimAssist aim = GetComponent<AimAssist>();
-            if (aim != null && !aim.IsTracking)
+            AimAssist aim = GetComponent<AimAssist>() ?? GetComponentInParent<AimAssist>() ?? GetComponentInChildren<AimAssist>();
+            if (aim != null && !aim.IsTracking && aim.CanLockTarget(droneRoot))
             {
                 aim.TryLockTarget(droneRoot);
             }

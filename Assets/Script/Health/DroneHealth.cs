@@ -175,11 +175,17 @@ public class DroneHealth : MonoBehaviour
 
         Debug.Log($"<color=red>[DroneHealth] DRONE DESTROYED ({gameObject.name})! Health depleted.</color>");
 
-        // Immediately notify CanonMovement so laser shuts off and leaves the destroyed drone
+        // Immediately notify CanonMovement and AimAssist so laser leaves the destroyed drone permanently
         if (cachedCanonMovement == null) cachedCanonMovement = FindAnyObjectByType<CanonMovement>();
         if (cachedCanonMovement != null)
         {
             cachedCanonMovement.OnTargetDroneDestroyed(gameObject);
+        }
+
+        AimAssist aim = FindAnyObjectByType<AimAssist>();
+        if (aim != null)
+        {
+            aim.OnDroneDestroyedOrDisabled(gameObject);
         }
 
         // Deactivate drone GameObject

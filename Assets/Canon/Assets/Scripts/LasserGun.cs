@@ -27,7 +27,7 @@ public class LasserGun : MonoBehaviour
         MonoBehaviour[] allScripts = transform.root.GetComponentsInChildren<MonoBehaviour>(true);
         foreach (var s in allScripts)
         {
-            if (s != null && s.GetType().Name == "FinalGame" && s.enabled)
+            if (s != null && (s.GetType().Name == "FinalGame" || s.GetType().Name == "CanonMovement") && s.enabled)
             {
                 enabled = false;
                 return;

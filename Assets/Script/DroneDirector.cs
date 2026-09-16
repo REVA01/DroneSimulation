@@ -2385,6 +2385,18 @@ public class DroneDirector : MonoBehaviour
 
         if (!removed) return;
 
+        // Clear target references in AimAssist and CanonMovement
+        AimAssist aim = FindAnyObjectByType<AimAssist>();
+        if (aim != null)
+        {
+            aim.OnDroneDestroyedOrDisabled(destroyedDrone);
+        }
+        CanonMovement canon = FindAnyObjectByType<CanonMovement>();
+        if (canon != null)
+        {
+            canon.OnTargetDroneDestroyed(destroyedDrone);
+        }
+
         // Destroy the dead drone GameObject cleanly so it doesn't linger in hierarchy
         if (Application.isPlaying) Destroy(destroyedDrone);
         else DestroyImmediate(destroyedDrone);

@@ -38,6 +38,22 @@ public class AimAssist : MonoBehaviour
     [Tooltip("Angle in degrees from aim line to target to break lock when manually steering away.")]
     public float breakLockAngle = 20f;
 
+    [Header("--- Target Release & Snap-Back Prevention ---")]
+    [Tooltip("How long (in seconds) a released/unselected target is ignored by auto-lock to prevent snapping back.")]
+    public float targetReleaseCooldown = 1.5f;
+
+    [Tooltip("If true, any manual steering input (WASD / Arrows / Mouse) immediately breaks the lock without fighting tracking speed.")]
+    public bool breakLockOnAnyManualInput = true;
+
+    [Tooltip("Allow Right Mouse Click to immediately unselect / release the current target.")]
+    public bool allowRightClickUnselect = true;
+
+    [Tooltip("Key to explicitly unselect / drop the current target lock.")]
+    public KeyCode explicitUnselectKey = KeyCode.Mouse1;
+
+    [Tooltip("Require direct line-of-sight aim (raycast) to re-lock a previously released target instead of wide spherecast.")]
+    public bool requireDirectAimToReacquire = true;
+
     [Header("--- Laser Detection Settings ---")]
     [Tooltip("Radius of the laser beam used for hit detection.")]
     public float beamHitRadius = 0.5f;
@@ -51,11 +67,21 @@ public class AimAssist : MonoBehaviour
     // The currently locked drone target (NOT serialized - no manual inspector setup)
     private GameObject currentTarget = null;
 
+    // The most recently released target and cooldown timer to prevent instant snap-back
+    private GameObject releasedTarget = null;
+    private float releaseCooldownTimer = 0f;
+
     /// <summary>True while actively tracking a locked drone target and firing.</summary>
     public bool IsTracking => currentTarget != null && IsPlayerFiring();
 
     /// <summary>The currently locked drone target GameObject (read only).</summary>
     public GameObject CurrentTarget => currentTarget;
+
+    /// <summary>The drone target that was most recently released/unselected.</summary>
+    public GameObject ReleasedTarget => releasedTarget;
+
+    /// <summary>Remaining cooldown time before released target can be re-locked.</summary>
+    public float ReleaseCooldownRemaining => releaseCooldownTimer;
 
     private float currentPitch = 0f;
     private Quaternion initialGunRotation;
@@ -119,29 +145,51 @@ public class AimAssist : MonoBehaviour
 
     /// <summary>
     /// Evaluated every frame:
+    /// - Decrements target-release cooldown timer.
+    /// - Checks for explicit target unselection input.
     /// - If the player is not firing the laser, aim assist is disabled and any target lock is released.
-    /// - If the player is firing and a target is locked, automatically follows it until destroyed.
-    /// - If the player is firing and no target is locked, checks if the laser points at any drone.
+    /// - If the player is firing and a target is locked, follows it unless manual steering overrides.
+    /// - If the player is firing and no target is locked, checks if the laser points at any valid drone.
     /// </summary>
     private void Update()
     {
-        // Aim assist only works while the player is actively firing the laser
+        // 1. Update target release cooldown timer
+        if (releaseCooldownTimer > 0f)
+        {
+            releaseCooldownTimer -= Time.deltaTime;
+            if (releaseCooldownTimer <= 0f)
+            {
+                releaseCooldownTimer = 0f;
+            }
+        }
+
+        // 2. Check for explicit unselection action (Right Click or custom key)
+        if (allowRightClickUnselect && (Input.GetKeyDown(explicitUnselectKey) || Input.GetMouseButtonDown(1)))
+        {
+            if (currentTarget != null)
+            {
+                ReleaseCurrentTarget("Explicit unselect button pressed");
+                return;
+            }
+        }
+
+        // 3. Aim assist only works while the player is actively firing the laser
         if (!IsPlayerFiring())
         {
             if (currentTarget != null)
             {
-                currentTarget = null;
+                ClearCurrentTargetOnFireStop();
             }
             return;
         }
 
-        // 1. If currently following a drone
+        // 4. If currently following a drone
         if (currentTarget != null)
         {
-            // If the drone was destroyed or deactivated, stop following
+            // If the drone was destroyed or deactivated, stop following immediately
             if (!IsDroneAlive(currentTarget))
             {
-                currentTarget = null;
+                ReleaseCurrentTarget("Target destroyed or inactive");
                 return;
             }
 
@@ -150,9 +198,115 @@ public class AimAssist : MonoBehaviour
         }
         else
         {
-            // 2. No target currently locked:
-            // Constantly check if the laser ray is pointing at any drone
-            CheckLaserRayHit();
+            // 5. No target currently locked:
+            // Only check if user is not actively providing manual steering input
+            if (!HasManualSteeringInput())
+            {
+                CheckLaserRayHit();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Detects whether the user is actively providing manual steering input via WASD, Arrows, or Mouse.
+    /// </summary>
+    public bool HasManualSteeringInput()
+    {
+        bool hasHorizontal = Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow) ||
+                             Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow);
+
+        bool hasVertical = Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow) ||
+                           Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow);
+
+        bool hasMouse = (canonMovement != null && canonMovement.allowMouseFire) &&
+                        (Mathf.Abs(Input.GetAxis("Mouse X")) > 0.08f || Mathf.Abs(Input.GetAxis("Mouse Y")) > 0.08f);
+
+        return hasHorizontal || hasVertical || hasMouse;
+    }
+
+    /// <summary>
+    /// Checks whether a drone is currently eligible for target locking.
+    /// Strictly rejects drones that are on release cooldown or when manual steering is active.
+    /// </summary>
+    public bool CanLockTarget(GameObject drone)
+    {
+        if (drone == null || !IsDroneAlive(drone)) return false;
+
+        // Never lock while player is providing manual steering input
+        if (breakLockOnAnyManualInput && HasManualSteeringInput())
+        {
+            return false;
+        }
+
+        // Enforce release cooldown: the unselected drone cannot be re-locked until cooldown expires
+        if (drone == releasedTarget && releaseCooldownTimer > 0f)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Immediately releases the current target, clears all references, and applies the release cooldown.
+    /// </summary>
+    public void ReleaseCurrentTarget(string reason = "")
+    {
+        if (currentTarget != null)
+        {
+            releasedTarget = currentTarget;
+            releaseCooldownTimer = targetReleaseCooldown;
+
+            GameObject oldTarget = currentTarget;
+            currentTarget = null;
+
+            if (canonMovement != null)
+            {
+                canonMovement.ClearTargetDrone(oldTarget);
+            }
+
+            Debug.Log($"<color=yellow>[AimAssist] Target released ({reason}): {oldTarget.name}. Cooldown: {targetReleaseCooldown:F1}s.</color>");
+        }
+    }
+
+    /// <summary>
+    /// Clears the current target when the laser ceases firing.
+    /// </summary>
+    public void ClearCurrentTargetOnFireStop()
+    {
+        if (currentTarget != null)
+        {
+            GameObject old = currentTarget;
+            currentTarget = null;
+            if (canonMovement != null)
+            {
+                canonMovement.ClearTargetDrone(old);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Called when a drone is destroyed, disabled, or removed from the scene.
+    /// Completely wipes all cached references and prevents snapping to its old position.
+    /// </summary>
+    public void OnDroneDestroyedOrDisabled(GameObject drone)
+    {
+        if (drone == null) return;
+
+        if (currentTarget == drone)
+        {
+            currentTarget = null;
+        }
+
+        if (releasedTarget == drone)
+        {
+            releasedTarget = null;
+            releaseCooldownTimer = 0f;
+        }
+
+        if (canonMovement != null)
+        {
+            currentPitch = canonMovement.CurrentPitch;
         }
     }
 
@@ -190,11 +344,15 @@ public class AimAssist : MonoBehaviour
     }
 
     /// <summary>
-    /// Casts a ray along the laser direction. If it points at any active drone,
-    /// that drone is automatically locked as the target to follow.
+    /// Casts a ray along the laser direction. If it points at any eligible drone,
+    /// that drone is locked as the target to follow.
+    /// Prioritizes direct precision Raycast before falling back to SphereCast,
+    /// and strictly enforces the target release cooldown.
     /// </summary>
     private void CheckLaserRayHit()
     {
+        if (breakLockOnAnyManualInput && HasManualSteeringInput()) return;
+
         Transform originTrans = firePoint != null ? firePoint : canonRotate;
         if (originTrans == null) return;
 
@@ -203,6 +361,23 @@ public class AimAssist : MonoBehaviour
 
         LayerMask mask = canonMovement != null ? canonMovement.hitLayers : targetLayers;
 
+        // 1. Direct precision Raycast check first:
+        // Allows deliberate re-locking if the user aims directly at a target whose cooldown expired
+        if (Physics.Raycast(rayOrigin, rayDirection, out RaycastHit directHit, maxDistance, mask, QueryTriggerInteraction.Ignore))
+        {
+            if (!IsPartOfCannon(directHit.collider))
+            {
+                GameObject drone = ResolveDroneRoot(directHit.collider);
+                if (drone != null && IsDroneAlive(drone) && CanLockTarget(drone))
+                {
+                    TryLockTarget(drone);
+                    return;
+                }
+            }
+        }
+
+        // 2. Secondary SphereCast check for general target acquisition:
+        // Strictly excludes released targets from wide spherecast snapping!
         RaycastHit[] hits = Physics.SphereCastAll(rayOrigin, beamHitRadius, rayDirection, maxDistance, mask, QueryTriggerInteraction.Ignore);
         Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
@@ -214,19 +389,36 @@ public class AimAssist : MonoBehaviour
             GameObject drone = ResolveDroneRoot(col);
             if (drone != null && IsDroneAlive(drone))
             {
-                TryLockTarget(drone);
-                return;
+                // Never allow a wide spherecast to snag a previously released target
+                if (drone == releasedTarget && requireDirectAimToReacquire)
+                {
+                    continue;
+                }
+
+                if (CanLockTarget(drone))
+                {
+                    TryLockTarget(drone);
+                    return;
+                }
             }
         }
     }
 
     /// <summary>
     /// Automatically rotates the cannon base (Yaw) and barrel (Pitch) to follow the locked drone.
-    /// Manual input (WASD / Arrows) has priority: steering away breaks the lock.
+    /// Manual input immediately breaks the lock cleanly without fighting the player.
     /// </summary>
     private void TrackTarget()
     {
         if (currentTarget == null || canonBase == null || canonRotate == null) return;
+
+        // 1. Immediate Manual Steering Override:
+        // If user actively provides any manual steering input, break lock instantly!
+        if (breakLockOnAnyManualInput && HasManualSteeringInput())
+        {
+            ReleaseCurrentTarget("Manual steering input override");
+            return;
+        }
 
         // Target position (center of collider if present)
         Vector3 targetPos = currentTarget.transform.position;
@@ -245,21 +437,21 @@ public class AimAssist : MonoBehaviour
         Vector3 toTargetDir = toTarget / distance;
         Vector3 aimDir = firePoint != null ? firePoint.forward : canonRotate.forward;
 
-        // Manual steering priority: if user actively steers away from the drone, break lock
+        // Secondary angle threshold check (if breakLockOnAnyManualInput is disabled)
+        float angleToTarget = Vector3.Angle(aimDir, toTargetDir);
+        if (HasManualSteeringInput() && angleToTarget > breakLockAngle)
+        {
+            ReleaseCurrentTarget("Manual steering angle threshold exceeded");
+            return;
+        }
+
         bool hasHorizontalInput = Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow) ||
                                   Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow);
 
         bool hasVerticalInput = Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow) ||
                                 Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow);
 
-        float angleToTarget = Vector3.Angle(aimDir, toTargetDir);
-        if ((hasHorizontalInput || hasVerticalInput) && angleToTarget > breakLockAngle)
-        {
-            currentTarget = null;
-            return;
-        }
-
-        // 1. Horizontal Base Yaw Rotation (only if user is not pressing A/D)
+        // 1. Horizontal Base Yaw Rotation (only if user is not providing horizontal steering)
         if (!hasHorizontalInput)
         {
             Vector3 aimFlat = firePoint.forward;
@@ -275,20 +467,17 @@ public class AimAssist : MonoBehaviour
             }
         }
 
-        // 2. Vertical Barrel Pitch Tilt (only if user is not pressing W/S)
+        // 2. Vertical Barrel Pitch Tilt (only if user is not providing vertical steering)
         if (!hasVerticalInput)
         {
-            // Measure actual target elevation vs current laser beam elevation
             float horizontalDistance = Mathf.Sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
             float targetElevation = Mathf.Atan2(toTarget.y, horizontalDistance) * Mathf.Rad2Deg;
 
             float aimHorizontalDist = Mathf.Sqrt(firePoint.forward.x * firePoint.forward.x + firePoint.forward.z * firePoint.forward.z);
             float currentElevation = Mathf.Atan2(firePoint.forward.y, Mathf.Max(0.001f, aimHorizontalDist)) * Mathf.Rad2Deg;
 
-            // Difference: positive means laser is too low and needs to tilt UP
             float elevationError = targetElevation - currentElevation;
 
-            // In FinalGame: decreasing currentPitch tilts UP, increasing tilts DOWN
             float pitchStep = Mathf.MoveTowards(0f, elevationError, trackingSpeed * Time.deltaTime);
             currentPitch -= pitchStep;
             currentPitch = Mathf.Clamp(currentPitch, minVerticalAngle, maxVerticalAngle);
@@ -302,7 +491,6 @@ public class AimAssist : MonoBehaviour
         }
         else
         {
-            // Sync current pitch from FinalGame when player provides manual pitch input
             if (canonMovement != null)
             {
                 currentPitch = canonMovement.CurrentPitch;
@@ -312,19 +500,30 @@ public class AimAssist : MonoBehaviour
 
     /// <summary>
     /// Locks onto the specified drone target and starts automatic following.
+    /// Strictly respects CanLockTarget to prevent snap-back to released targets.
     /// </summary>
     /// <param name="drone">The drone GameObject to lock onto.</param>
     /// <returns>True if the lock was successfully established.</returns>
     public bool TryLockTarget(GameObject drone)
     {
         if (!IsPlayerFiring()) return false;
-        if (drone == null || !IsDroneAlive(drone)) return false;
+        if (!CanLockTarget(drone)) return false;
 
         currentTarget = drone;
+
+        // If explicitly re-locking the released target, clear release state
+        if (drone == releasedTarget)
+        {
+            releasedTarget = null;
+            releaseCooldownTimer = 0f;
+        }
+
         if (canonMovement != null)
         {
             currentPitch = canonMovement.CurrentPitch;
+            canonMovement.SetTargetDrone(drone);
         }
+
         Debug.Log($"<color=cyan>[AimAssist] Laser locked on drone: {drone.name}. Following target.</color>");
         return true;
     }
