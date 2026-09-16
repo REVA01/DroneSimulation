@@ -69,6 +69,18 @@ public class AngleToRateController
     }
 
     /// <summary>
+    /// Updates attitude angle PID gains dynamically at runtime.
+    /// </summary>
+    public void UpdateGains(
+        float pitchKp, float pitchKi, float pitchKd,
+        float rollKp, float rollKi, float rollKd,
+        float integralLimit, float outputLimit)
+    {
+        pitchPID.SetGains(pitchKp, pitchKi, pitchKd, integralLimit, outputLimit);
+        rollPID.SetGains(rollKp, rollKi, rollKd, integralLimit, outputLimit);
+    }
+
+    /// <summary>
     /// Resets the pitch and roll angle PID state history.
     /// </summary>
     public void Reset()

@@ -96,6 +96,13 @@ public class DronePersonalityProfile
     public float retreatDuration = 2.5f;
     public bool canRangedAttack = false;
     public float rangedAttackDistance = 14f;
+
+    // Relative multipliers sampled at creation to maintain personality variation when master director settings change
+    public float speedMultiplier = 1.0f;
+    public float distanceMultiplier = 1.0f;
+    public float cooldownMultiplier = 1.0f;
+    public float reactionMultiplier = 1.0f;
+    public float altitudeOffset = 0f;
 }
 
 public class DroneBrain : MonoBehaviour
@@ -146,6 +153,28 @@ public class DroneBrain : MonoBehaviour
     }
 
     /// <summary>
+    /// Recalculates individual drone profile values based on central DroneDirector parameters while preserving personality variance.
+    /// </summary>
+    public void SyncFromDirector(DroneDirector directorInstance)
+    {
+        if (directorInstance == null) return;
+        director = directorInstance;
+        if (personality == null) return;
+
+        personality.approachSpeed = director.approachSpeed * personality.speedMultiplier;
+        personality.attackSpeed = director.attackSpeed * personality.speedMultiplier;
+        personality.strikeDistance = director.attackDistance;
+        personality.decisionInterval = Mathf.Max(0.1f, director.decisionInterval * personality.reactionMultiplier);
+        personality.reactionTime = Mathf.Max(0.05f, director.reactionTime * personality.reactionMultiplier);
+        personality.attackCooldown = Mathf.Max(1.0f, director.attackCooldown * personality.cooldownMultiplier);
+        personality.orbitRadius = Mathf.Max(3.0f, director.orbitRadius * personality.distanceMultiplier);
+        personality.preferredAltitude = Mathf.Clamp(director.hoverHeight + personality.altitudeOffset, director.minAltitude, director.maxAltitude);
+        personality.retreatDistance = director.repositionDistance * personality.distanceMultiplier;
+        personality.rangedAttackDistance = director.maxAttackRange;
+        personality.canRangedAttack = director.allowRangedVisuals && (director.maxAttackRange > director.attackDistance);
+    }
+
+    /// <summary>
     /// Generates a completely unique personality profile with controlled randomness based on director settings.
     /// </summary>
     public void GeneratePersonality()
@@ -181,73 +210,57 @@ public class DroneBrain : MonoBehaviour
             personality.archetype = DroneAIArchetype.Opportunist;
         }
 
-        // 2. Sample randomized attributes within Inspector ranges
+        // 2. Sample relative multipliers for individual personality variety
+        float minSpeedM = Mathf.Min(director.speedMultiplierRange.x, director.speedMultiplierRange.y);
+        float maxSpeedM = Mathf.Max(director.speedMultiplierRange.x, director.speedMultiplierRange.y);
+        personality.speedMultiplier = UnityEngine.Random.Range(minSpeedM, maxSpeedM);
+
+        float minDistM = Mathf.Min(director.distanceMultiplierRange.x, director.distanceMultiplierRange.y);
+        float maxDistM = Mathf.Max(director.distanceMultiplierRange.x, director.distanceMultiplierRange.y);
+        personality.distanceMultiplier = UnityEngine.Random.Range(minDistM, maxDistM);
+
+        float minCdM = Mathf.Min(director.cooldownMultiplierRange.x, director.cooldownMultiplierRange.y);
+        float maxCdM = Mathf.Max(director.cooldownMultiplierRange.x, director.cooldownMultiplierRange.y);
+        personality.cooldownMultiplier = UnityEngine.Random.Range(minCdM, maxCdM);
+
+        float minReactM = Mathf.Min(director.reactionTimeRange.x, director.reactionTimeRange.y) / Mathf.Max(director.reactionTime, 0.01f);
+        float maxReactM = Mathf.Max(director.reactionTimeRange.x, director.reactionTimeRange.y) / Mathf.Max(director.reactionTime, 0.01f);
+        personality.reactionMultiplier = UnityEngine.Random.Range(minReactM, maxReactM);
+
+        float minAltOff = Mathf.Min(director.altitudeOffsetRange.x, director.altitudeOffsetRange.y);
+        float maxAltOff = Mathf.Max(director.altitudeOffsetRange.x, director.altitudeOffsetRange.y);
+        personality.altitudeOffset = UnityEngine.Random.Range(minAltOff, maxAltOff);
+
         float minAgg = Mathf.Min(director.aggressionRange.x, director.aggressionRange.y);
         float maxAgg = Mathf.Max(director.aggressionRange.x, director.aggressionRange.y);
         personality.aggression = UnityEngine.Random.Range(minAgg, maxAgg);
-
-        float minPrefDist = Mathf.Min(director.preferredDistanceRange.x, director.preferredDistanceRange.y);
-        float maxPrefDist = Mathf.Max(director.preferredDistanceRange.x, director.preferredDistanceRange.y);
-        personality.preferredDistance = UnityEngine.Random.Range(minPrefDist, maxPrefDist);
-
-        float minStrike = Mathf.Min(director.strikeDistanceRange.x, director.strikeDistanceRange.y);
-        float maxStrike = Mathf.Max(director.strikeDistanceRange.x, director.strikeDistanceRange.y);
-        personality.strikeDistance = UnityEngine.Random.Range(minStrike, maxStrike);
-
-        float minApp = Mathf.Min(director.approachSpeedRange.x, director.approachSpeedRange.y);
-        float maxApp = Mathf.Max(director.approachSpeedRange.x, director.approachSpeedRange.y);
-        personality.approachSpeed = UnityEngine.Random.Range(minApp, maxApp);
-
-        float minAtk = Mathf.Min(director.attackSpeedRange.x, director.attackSpeedRange.y);
-        float maxAtk = Mathf.Max(director.attackSpeedRange.x, director.attackSpeedRange.y);
-        personality.attackSpeed = UnityEngine.Random.Range(minAtk, maxAtk);
-
-        float minDec = Mathf.Min(director.decisionIntervalRange.x, director.decisionIntervalRange.y);
-        float maxDec = Mathf.Max(director.decisionIntervalRange.x, director.decisionIntervalRange.y);
-        personality.decisionInterval = UnityEngine.Random.Range(minDec, maxDec);
-
-        float minReact = Mathf.Min(director.reactionTimeRange.x, director.reactionTimeRange.y);
-        float maxReact = Mathf.Max(director.reactionTimeRange.x, director.reactionTimeRange.y);
-        personality.reactionTime = UnityEngine.Random.Range(minReact, maxReact);
-
-        float minCd = Mathf.Min(director.attackCooldownRange.x, director.attackCooldownRange.y);
-        float maxCd = Mathf.Max(director.attackCooldownRange.x, director.attackCooldownRange.y);
-        personality.attackCooldown = UnityEngine.Random.Range(minCd, maxCd);
-
-        float minOrbR = Mathf.Min(director.orbitRadiusRange.x, director.orbitRadiusRange.y);
-        float maxOrbR = Mathf.Max(director.orbitRadiusRange.x, director.orbitRadiusRange.y);
-        personality.orbitRadius = UnityEngine.Random.Range(minOrbR, maxOrbR);
 
         float minOrbS = Mathf.Min(director.orbitSpeedRange.x, director.orbitSpeedRange.y);
         float maxOrbS = Mathf.Max(director.orbitSpeedRange.x, director.orbitSpeedRange.y);
         float orbitDir = (UnityEngine.Random.value > 0.5f) ? 1f : -1f;
         personality.orbitSpeed = UnityEngine.Random.Range(minOrbS, maxOrbS) * orbitDir;
 
-        float minAlt = Mathf.Min(director.altitudeRange.x, director.altitudeRange.y);
-        float maxAlt = Mathf.Max(director.altitudeRange.x, director.altitudeRange.y);
-        personality.preferredAltitude = UnityEngine.Random.Range(minAlt, maxAlt);
-
         float minRet = Mathf.Min(director.retreatDurationRange.x, director.retreatDurationRange.y);
         float maxRet = Mathf.Max(director.retreatDurationRange.x, director.retreatDurationRange.y);
         personality.retreatDuration = UnityEngine.Random.Range(minRet, maxRet);
-        personality.retreatDistance = personality.preferredDistance + UnityEngine.Random.Range(2.5f, 4.5f);
 
         personality.flankAngleOffset = (UnityEngine.Random.value > 0.5f ? 1f : -1f) * UnityEngine.Random.Range(70f, 135f);
+
+        // Apply director base values scaled by individual multipliers
+        SyncFromDirector(director);
 
         // 3. Archetype-specific bias & initial state
         switch (personality.archetype)
         {
             case DroneAIArchetype.AggressiveChaser:
                 personality.aggression = Mathf.Clamp01(personality.aggression + 0.2f);
-                personality.preferredDistance = Mathf.Max(3.5f, personality.preferredDistance - 2f);
-                personality.attackCooldown = Mathf.Max(2.5f, personality.attackCooldown - 1.2f);
-                personality.attackSpeed = Mathf.Max(personality.attackSpeed, maxAtk * 0.95f);
+                personality.preferredDistance = Mathf.Max(3.0f, personality.preferredDistance - 2f);
+                personality.attackCooldown = Mathf.Max(1.5f, personality.attackCooldown - 1.0f);
+                personality.attackSpeed = Mathf.Max(personality.attackSpeed, director.attackSpeed * 1.1f);
                 currentState = DroneAIState.Approaching;
                 break;
 
             case DroneAIArchetype.RangedHarasser:
-                personality.canRangedAttack = director.allowRangedVisuals;
-                personality.rangedAttackDistance = director.rangedAttackRange;
                 personality.preferredDistance = Mathf.Max(8.0f, personality.preferredDistance + 1.5f);
                 personality.aggression = Mathf.Clamp(personality.aggression * 0.75f, 0.2f, 0.7f);
                 currentState = DroneAIState.Approaching;
@@ -264,7 +277,7 @@ public class DroneBrain : MonoBehaviour
                 break;
 
             case DroneAIArchetype.Opportunist:
-                personality.preferredAltitude = UnityEngine.Random.value > 0.5f ? maxAlt + 1.2f : minAlt;
+                personality.preferredAltitude = UnityEngine.Random.value > 0.5f ? director.maxAltitude - 1f : director.minAltitude + 0.5f;
                 currentState = DroneAIState.Repositioning;
                 break;
         }
@@ -641,127 +654,246 @@ public class DroneBrain : MonoBehaviour
 
 public class DroneDirector : MonoBehaviour
 {
-    [Header("Target")]
-    public Transform target;
-    public string targetTag = "";
-
-    [Header("Distance-Based Following & Combat")]
-    public float engagementDistance = 8.5f;
-    public float followDistance = 6.0f;
-    public float followHeight = 1.8f;
-    public float followFormationSpacing = 4.0f;
-    public float followSpeed = 6.5f;
-    public float maxFollowSpeed = 11.0f;
-    public float followAcceleration = 7.0f;
-    public FinalFormationType followFormation = FinalFormationType.VFormation;
-    public bool randomizeFollowFormation = true;
-
-    [HideInInspector] public bool chaseMode = true;
-    [HideInInspector] public float reachDistance { get => followDistance; set => followDistance = value; }
-    [HideInInspector] public float startSpeed { get => followSpeed; set => followSpeed = value; }
-    [HideInInspector] public float maxSpeed { get => maxFollowSpeed; set => maxFollowSpeed = value; }
-    [HideInInspector] public float acceleration { get => followAcceleration; set => followAcceleration = value; }
-    [HideInInspector] public float obstacleCheckDistance = 4.0f;
-
     public static DroneDirector Instance { get; private set; }
 
-    [Header("Combat State Machine (Read Only)")]
+    // =========================================================================
+    // 1. FLIGHT
+    // =========================================================================
+    [Header("Flight")]
+    [Tooltip("Maximum horizontal forward flight speed limit enforced by FCS.")]
+    public float maxForwardSpeed = 25.0f;
+    [Tooltip("Maximum horizontal strafe/side flight speed limit enforced by FCS.")]
+    public float maxSideSpeed = 20.0f;
+    [Tooltip("Hard clamp on drone pitch and roll tilt angle in degrees.")]
+    public float maxTiltAngle = 30.0f;
+    [Tooltip("Maximum upward motor force capacity per motor.")]
+    public float maxMotorForce = 10.0f;
+    [Tooltip("Drone physical mass in kilograms.")]
+    public float droneMass = 1.0f;
+    [Tooltip("Rigidbody linear damping / drag to resist unwanted air drift.")]
+    public float linearDamping = 0.2f;
+    [Tooltip("Rigidbody angular damping to eliminate rotational oscillations.")]
+    public float angularDamping = 1.0f;
+
+    // =========================================================================
+    // 2. MOVEMENT
+    // =========================================================================
+    [Header("Movement")]
+    [Tooltip("Standard cruise speed for formation flight and general cruising.")]
+    public float cruiseSpeed = 6.0f;
+    [Tooltip("Approach speed when navigating toward the target or closing distance.")]
+    public float approachSpeed = 8.0f;
+    [Tooltip("High-speed sprint when actively diving or executing an attack run.")]
+    public float attackSpeed = 12.0f;
+    [Tooltip("Speed when disengaging, retreating, or repositioning away from target.")]
+    public float disengageSpeed = 8.0f;
+    [Tooltip("Acceleration rate for smooth speed transitions.")]
+    public float acceleration = 8.0f;
+    [Tooltip("Distance to target/waypoint where the drone halts and holds hover.")]
+    public float stopDistance = 1.5f;
+    [Tooltip("Distance from waypoint where arrival slowdown and deceleration begins.")]
+    public float brakingDistance = 3.0f;
+
+    // =========================================================================
+    // 3. ROTATION
+    // =========================================================================
+    [Header("Rotation")]
+    [Tooltip("Target alignment and yaw rotation speed in radians/second.")]
+    public float turnSpeed = 6.0f;
+    [Tooltip("Maximum yaw angular rate limit in degrees/second.")]
+    public float maxYawRate = 90.0f;
+    [Tooltip("Maximum pitch angular rate limit in degrees/second.")]
+    public float maxPitchRate = 100.0f;
+    [Tooltip("Maximum roll angular rate limit in degrees/second.")]
+    public float maxRollRate = 100.0f;
+    [Tooltip("Maximum aerodynamic banking roll angle into turns in degrees.")]
+    public float maxBankAngle = 35.0f;
+    [Tooltip("Banking sensitivity multiplier based on turn sharpness.")]
+    public float bankAmount = 1.2f;
+    [Tooltip("Smoothing factor for steering direction changes.")]
+    public float steeringSmoothing = 8.0f;
+
+    // =========================================================================
+    // 4. ALTITUDE
+    // =========================================================================
+    [Header("Altitude")]
+    [Tooltip("Standard cruising and hover altitude offset above target position.")]
+    public float hoverHeight = 2.5f;
+    [Tooltip("Lower flight ceiling / minimum ground clearance altitude.")]
+    public float minAltitude = 1.0f;
+    [Tooltip("Upper flight ceiling clamp.")]
+    public float maxAltitude = 15.0f;
+    [Tooltip("Maximum vertical ascent and descent rate in meters/second.")]
+    public float maxClimbSpeed = 6.0f;
+
+    // =========================================================================
+    // 5. TARGETING
+    // =========================================================================
+    [Header("Targeting")]
+    [Tooltip("Transform of the primary target (player, vehicle, objective).")]
+    public Transform target;
+    [Tooltip("Tag used to automatically locate the target if unassigned.")]
+    public string targetTag = "";
+    [Tooltip("Maximum detection range for tracking targets.")]
+    public float detectionRange = 50.0f;
+    [Tooltip("Distance threshold where combat maneuvers and tactical behavior activate.")]
+    public float engagementDistance = 10.0f;
+    [Tooltip("Interval (seconds) at which target switching conditions are evaluated.")]
+    public float targetSwitchingInterval = 5.0f;
+    [Tooltip("Aim accuracy factor [0 to 1] influencing lead and targeting precision.")]
+    [Range(0f, 1f)]
+    public float aimAccuracy = 0.9f;
+
+    // =========================================================================
+    // 6. ATTACK
+    // =========================================================================
+    [Header("Attack")]
+    [Tooltip("Contact or strike initiation distance for melee dive attacks.")]
+    public float attackDistance = 2.5f;
+    [Tooltip("Minimum standoff distance before attack initiation.")]
+    public float minAttackRange = 2.0f;
+    [Tooltip("Maximum range for ranged attacks and harassment.")]
+    public float maxAttackRange = 14.0f;
+    [Tooltip("Safe standoff distance drones retreat to after delivering an attack.")]
+    public float repositionDistance = 8.0f;
+    [Tooltip("Radius of orbit circle for circling and distraction maneuvers.")]
+    public float orbitRadius = 8.0f;
+    [Tooltip("Base cooldown in seconds between attacks for an individual drone.")]
+    public float attackCooldown = 4.5f;
+    [Tooltip("Minimum delay in seconds between any two drone strikes squad-wide.")]
+    [Min(0f)]
+    public float globalAttackCooldown = 0.8f;
+    [Tooltip("Maximum number of drones allowed to actively strike simultaneously.")]
+    [Range(1, 4)]
+    public int maxConcurrentAttackers = 1;
+    [Tooltip("Burst fire rate / cooldown for ranged visual attacks.")]
+    public float fireRate = 1.0f;
+    [Tooltip("Base aggression level [0 to 1] influencing attack probability.")]
+    [Range(0f, 1f)]
+    public float aggression = 0.6f;
+    [Tooltip("Enable ranged laser tracer visual effects during combat.")]
+    public bool allowRangedVisuals = true;
+
+    // =========================================================================
+    // 7. PID / FLIGHT CONTROL
+    // =========================================================================
+    [Header("PID / Flight Control")]
+    [Tooltip("Proportional gain for horizontal velocity controller.")]
+    public float velocityKp = 1.5f;
+    [Tooltip("Integral gain for horizontal velocity controller.")]
+    public float velocityKi = 0.05f;
+    [Tooltip("Derivative gain for horizontal velocity controller.")]
+    public float velocityKd = 0.25f;
+    [Tooltip("Proportional gain for pitch attitude angle controller.")]
+    public float pitchAngleKp = 4.0f;
+    [Tooltip("Proportional gain for roll attitude angle controller.")]
+    public float rollAngleKp = 4.0f;
+    [Tooltip("Proportional gain for angular rate controllers (pitch and roll).")]
+    public float rateKp = 0.8f;
+    [Tooltip("Derivative gain for angular rate controllers (pitch and roll).")]
+    public float rateKd = 0.05f;
+    [Tooltip("Proportional gain for yaw rotation rate controller.")]
+    public float yawRateKp = 2.5f;
+    [Tooltip("Proportional gain for vertical altitude controller.")]
+    public float altitudeKp = 3.0f;
+
+    // =========================================================================
+    // 8. AI BEHAVIOR & ROLES
+    // =========================================================================
+    [Header("AI Behavior & Roles")]
+    [Tooltip("Enable independent AI personality profiles and autonomous decision making.")]
+    public bool enableAutonomousIndividualAI = true;
+    [Tooltip("Base AI reaction latency in seconds.")]
+    public float reactionTime = 0.2f;
+    [Tooltip("Evaluation interval between tactical decision reassessments.")]
+    public float decisionInterval = 0.5f;
+    [Tooltip("Minimum spacing between squad drones to prevent crowding.")]
+    public float minDroneSeparation = 5.0f;
+    [Tooltip("Strength of repulsive steering force applied between nearby drones.")]
+    public float separationRepulsionStrength = 2.0f;
+    [Tooltip("Relative spawn weight for Aggressive Chaser archetype.")]
+    [Range(0, 100)] public int weightAggressiveChaser = 25;
+    [Tooltip("Relative spawn weight for Ranged Harasser archetype.")]
+    [Range(0, 100)] public int weightRangedHarasser = 25;
+    [Tooltip("Relative spawn weight for Circler Orbiter archetype.")]
+    [Range(0, 100)] public int weightCirclerOrbiter = 25;
+    [Tooltip("Relative spawn weight for Flanker archetype.")]
+    [Range(0, 100)] public int weightFlanker = 15;
+    [Tooltip("Relative spawn weight for Opportunist archetype.")]
+    [Range(0, 100)] public int weightOpportunist = 10;
+
+    // =========================================================================
+    // 9. RANDOMIZATION RANGES
+    // =========================================================================
+    [Header("Randomization Ranges")]
+    [Tooltip("Sampling range for individual drone aggression.")]
+    public Vector2 aggressionRange = new Vector2(0.25f, 0.95f);
+    [Tooltip("Sampling range for individual drone speed multiplier.")]
+    public Vector2 speedMultiplierRange = new Vector2(0.85f, 1.25f);
+    [Tooltip("Sampling range for individual drone standoff distance multiplier.")]
+    public Vector2 distanceMultiplierRange = new Vector2(0.8f, 1.2f);
+    [Tooltip("Sampling range for individual drone attack cooldown multiplier.")]
+    public Vector2 cooldownMultiplierRange = new Vector2(0.75f, 1.3f);
+    [Tooltip("Sampling range for individual drone reaction latency in seconds.")]
+    public Vector2 reactionTimeRange = new Vector2(0.1f, 0.35f);
+    [Tooltip("Sampling range for individual drone altitude offset from hoverHeight.")]
+    public Vector2 altitudeOffsetRange = new Vector2(-0.8f, 1.2f);
+    [Tooltip("Sampling range for individual drone orbit speed in degrees/second.")]
+    public Vector2 orbitSpeedRange = new Vector2(25.0f, 50.0f);
+    [Tooltip("Sampling range for retreat duration in seconds after an attack.")]
+    public Vector2 retreatDurationRange = new Vector2(2.0f, 3.2f);
+
+    // =========================================================================
+    // 10. DEBUG
+    // =========================================================================
+    [Header("Debug")]
     public CombatPhase currentPhase = CombatPhase.SearchAndSpread;
     public TacticalFormationProfile currentCombatFormation = TacticalFormationProfile.LeftRightFlank;
     public FinalFormationType selectedFinalFormation = FinalFormationType.VFormation;
     public float phaseTimer = 0f;
+    public List<DroneSquadMember> squad = new List<DroneSquadMember>();
 
-    [Header("Formation Cycling")]
-    [Range(2, 8)]
-    public int formationsBeforeAttack = 4;
-    public float surroundFormationDuration = 3.5f;
-    public int currentFormationStep = 0;
+    // ── Internal / Backward Compatibility State ──────────────────────────────
+    [HideInInspector] public float followDistance = 6.0f;
+    [HideInInspector] public float followHeight = 1.8f;
+    [HideInInspector] public float followFormationSpacing = 4.0f;
+    [HideInInspector] public float followSpeed = 6.5f;
+    [HideInInspector] public float maxFollowSpeed = 11.0f;
+    [HideInInspector] public float followAcceleration = 7.0f;
+    [HideInInspector] public FinalFormationType followFormation = FinalFormationType.VFormation;
+    [HideInInspector] public bool randomizeFollowFormation = true;
+    [HideInInspector] public bool chaseMode = true;
+    [HideInInspector] public float reachDistance { get => followDistance; set => followDistance = value; }
+    [HideInInspector] public float startSpeed { get => followSpeed; set => followSpeed = value; }
+    [HideInInspector] public float maxSpeed { get => maxFollowSpeed; set => maxFollowSpeed = value; }
+    [HideInInspector] public float obstacleCheckDistance = 4.0f;
+    [HideInInspector] public int formationsBeforeAttack = 4;
+    [HideInInspector] public float surroundFormationDuration = 3.5f;
+    [HideInInspector] public int currentFormationStep = 0;
+    [HideInInspector] public float formationTransitionSpeed = 120f;
+    [HideInInspector] public float radialTransitionSpeed = 8.0f;
+    [HideInInspector] public float verticalTransitionSpeed = 5.0f;
+    [HideInInspector] public float spreadDuration = 3.0f;
+    [HideInInspector] public float distractDuration = 5.0f;
+    [HideInInspector] public float attackDuration = 4.0f;
+    [HideInInspector] public float disengageDuration = 2.5f;
+    [HideInInspector] public float strikeDistance { get => attackDistance; set => attackDistance = value; }
+    [HideInInspector] public float arrivalSlowdownDistance { get => brakingDistance; set => brakingDistance = value; }
+    [HideInInspector] public float minCombatSpeed = 3.5f;
+    [HideInInspector] public TacticalAttackPattern currentAttackPattern = TacticalAttackPattern.ConvergingPincer;
+    [HideInInspector] public float victoryFormationSpacing = 4.2f;
+    [HideInInspector] public float victoryFormationHeight = 2.5f;
+    [HideInInspector] public float formationArrivalTolerance = 0.35f;
+    [HideInInspector] public float formationSyncTimeTolerance = 0.5f;
+    [HideInInspector] public float cinematicHoldDuration = 4.0f;
+    [HideInInspector] public float victoryTravelTimeout = 2.0f;
+    [HideInInspector] public float minTravelSpeed = 4.5f;
+    [HideInInspector] public float maxTravelSpeed = 9.5f;
+    [HideInInspector] public bool isMissionComplete = false;
+    [HideInInspector] public UnityEvent OnMissionComplete;
+    [HideInInspector] public LayerMask obstacleLayers = -1;
 
-    [Header("Smooth Trajectory Settings")]
-    public float formationTransitionSpeed = 120f;
-    public float radialTransitionSpeed = 8.0f;
-    public float verticalTransitionSpeed = 5.0f;
-
-    [Header("Combat Timings")]
-    public float spreadDuration = 3.0f;
-    public float distractDuration = 5.0f;
-    public float attackDuration = 4.0f;
-    public float disengageDuration = 2.5f;
-
-    [Header("Tactical Speeds & Smooth Acceleration")]
-    public float cruiseSpeed = 5.5f;
-    public float attackSpeed = 10.0f;
-    public float disengageSpeed = 7.5f;
-    public float strikeDistance = 2.5f;
-    public float arrivalSlowdownDistance = 0.8f;
-    public float minCombatSpeed = 3.5f;
-
-    [Header("Randomized Attack Intelligence (Read Only)")]
-    public TacticalAttackPattern currentAttackPattern = TacticalAttackPattern.ConvergingPincer;
-
-    [Header("AI Coordination & Concurrency")]
-    [Tooltip("Enable independent AI profiles and autonomous decision making per drone.")]
-    public bool enableAutonomousIndividualAI = true;
-
-    [Tooltip("Maximum number of drones allowed to actively dive/strike the target at the same time.")]
-    [Range(1, 4)]
-    public int maxConcurrentAttackers = 1;
-
-    [Tooltip("Minimum delay (seconds) between any two drone strikes so the player has breathing room.")]
-    [Min(0f)]
-    public float globalAttackCooldown = 0.8f;
-
-    [Header("AI Archetype Weights (Relative Probabilities)")]
-    [Range(0, 100)] public int weightAggressiveChaser = 25;
-    [Range(0, 100)] public int weightRangedHarasser = 25;
-    [Range(0, 100)] public int weightCirclerOrbiter = 25;
-    [Range(0, 100)] public int weightFlanker = 15;
-    [Range(0, 100)] public int weightOpportunist = 10;
-
-    [Header("AI Personality Ranges (Randomized per Drone)")]
-    public Vector2 aggressionRange = new Vector2(0.25f, 0.95f);
-    public Vector2 preferredDistanceRange = new Vector2(5.0f, 11.0f);
-    public Vector2 strikeDistanceRange = new Vector2(2.0f, 2.8f);
-    public Vector2 approachSpeedRange = new Vector2(5.0f, 8.0f);
-    public Vector2 attackSpeedRange = new Vector2(9.5f, 13.0f);
-    public Vector2 decisionIntervalRange = new Vector2(0.3f, 0.7f);
-    public Vector2 reactionTimeRange = new Vector2(0.1f, 0.35f);
-    public Vector2 attackCooldownRange = new Vector2(3.5f, 6.5f);
-    public Vector2 orbitRadiusRange = new Vector2(6.0f, 11.0f);
-    public Vector2 orbitSpeedRange = new Vector2(25.0f, 50.0f);
-    public Vector2 altitudeRange = new Vector2(1.6f, 4.2f);
-    public Vector2 retreatDurationRange = new Vector2(2.0f, 3.2f);
-
-    [Header("Ranged Harasser Visuals")]
-    public bool allowRangedVisuals = true;
-    public float rangedAttackRange = 14.0f;
-    public float rangedAttackCooldown = 3.5f;
-
-    [Header("Area Control & Separation")]
-    public float minDroneSeparation = 5.5f;
-    public float separationRepulsionStrength = 2.0f;
-
-    [Header("Post-Combat Victory Sequence")]
-    public float victoryFormationSpacing = 4.2f;
-    public float victoryFormationHeight = 2.5f;
-    public float formationArrivalTolerance = 0.35f;
-    public float formationSyncTimeTolerance = 0.5f;
-    public float cinematicHoldDuration = 4.0f;
-    public float victoryTravelTimeout = 2.0f;
-
-    [Header("Synchronized Travel Speeds")]
-    public float minTravelSpeed = 4.5f;
-    public float maxTravelSpeed = 9.5f;
-
-    [Header("Mission Status")]
-    public bool isMissionComplete = false;
-    public UnityEvent OnMissionComplete;
-
-    [Header("Obstacle Awareness")]
-    public LayerMask obstacleLayers = -1;
-
-    [Header("Drone Spawn System")]
-    [SerializeField] private DroneSpanSystem droneSpanSystem;
+    [SerializeField, HideInInspector] private DroneSpanSystem droneSpanSystem;
     public DroneSpanSystem DroneSpanSystem { get => droneSpanSystem; set => droneSpanSystem = value; }
 
     public int droneCount
@@ -774,8 +906,16 @@ public class DroneDirector : MonoBehaviour
         }
     }
 
-    [Header("Active Squad Data (Read Only)")]
-    public List<DroneSquadMember> squad = new List<DroneSquadMember>();
+    [HideInInspector] public float rangedAttackRange { get => maxAttackRange; set => maxAttackRange = value; }
+    [HideInInspector] public float rangedAttackCooldown { get => fireRate; set => fireRate = value; }
+    [HideInInspector] public Vector2 preferredDistanceRange { get => new Vector2(minAttackRange, repositionDistance); set {} }
+    [HideInInspector] public Vector2 strikeDistanceRange { get => new Vector2(attackDistance * 0.8f, attackDistance * 1.1f); set {} }
+    [HideInInspector] public Vector2 approachSpeedRange { get => new Vector2(approachSpeed * speedMultiplierRange.x, approachSpeed * speedMultiplierRange.y); set {} }
+    [HideInInspector] public Vector2 attackSpeedRange { get => new Vector2(attackSpeed * speedMultiplierRange.x, attackSpeed * speedMultiplierRange.y); set {} }
+    [HideInInspector] public Vector2 decisionIntervalRange { get => new Vector2(decisionInterval * 0.6f, decisionInterval * 1.4f); set {} }
+    [HideInInspector] public Vector2 attackCooldownRange { get => new Vector2(attackCooldown * cooldownMultiplierRange.x, attackCooldown * cooldownMultiplierRange.y); set {} }
+    [HideInInspector] public Vector2 orbitRadiusRange { get => new Vector2(orbitRadius * distanceMultiplierRange.x, orbitRadius * distanceMultiplierRange.y); set {} }
+    [HideInInspector] public Vector2 altitudeRange { get => new Vector2(minAltitude, maxAltitude); set { minAltitude = value.x; maxAltitude = value.y; } }
 
     public int LastSpawnedCount { get => lastSpawnedCount; set => lastSpawnedCount = value; }
     private int lastSpawnedCount = -1;
@@ -877,6 +1017,205 @@ public class DroneDirector : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Fully equips an autonomous drone with required navigation, input, FCS, hardware, brain, and health components,
+    /// parenting a dedicated tactical waypoint to DroneDirector and syncing all settings.
+    /// </summary>
+    public DroneSquadMember ConfigureDrone(GameObject droneObj, Vector3 spawnPos, int index)
+    {
+        if (droneObj == null) return null;
+
+        // Dedicated tactical waypoint parented to the director transform
+        GameObject waypointObj = new GameObject($"TacticalWaypoint_{index + 1}");
+        waypointObj.transform.position = spawnPos;
+        waypointObj.transform.SetParent(transform);
+
+        // Navigation
+        DroneNPCFollowTarget followTarget = droneObj.GetComponent<DroneNPCFollowTarget>();
+        if (followTarget == null) followTarget = droneObj.AddComponent<DroneNPCFollowTarget>();
+        followTarget.enabled = true;
+        followTarget.targetBox = waypointObj.transform;
+        followTarget.stopDistance = stopDistance;
+        followTarget.moveSpeed = cruiseSpeed;
+        followTarget.requireTargetLock = false;
+
+        // Enable autonomous flight control systems
+        DroneInputs inputs = droneObj.GetComponent<DroneInputs>();
+        if (inputs == null) inputs = droneObj.AddComponent<DroneInputs>();
+        inputs.isAIControlled = true;
+
+        FlightControlSystem fcs = droneObj.GetComponent<FlightControlSystem>();
+        if (fcs == null) fcs = droneObj.AddComponent<FlightControlSystem>();
+        fcs.enabled = true;
+
+        DroneHardware dh = droneObj.GetComponent<DroneHardware>();
+        if (dh == null) dh = droneObj.AddComponent<DroneHardware>();
+        dh.enabled = true;
+
+        // AI brain
+        DroneBrain brain = droneObj.GetComponent<DroneBrain>();
+        if (brain == null) brain = droneObj.AddComponent<DroneBrain>();
+
+        // Health – 30% laser slowdown, clear targeting state
+        DroneHealth health = droneObj.GetComponent<DroneHealth>();
+        if (health == null) health = droneObj.AddComponent<DroneHealth>();
+        health.damageSlowdownMultiplier = 0.70f;
+        health.SetLaserTargeted(false);
+
+        // Role assignment
+        DroneTacticalRole assignedRole = (index == 0) ? DroneTacticalRole.Distractor : DroneTacticalRole.Flanker;
+        droneObj.name = $"TacticalDrone_{index + 1}_{assignedRole}";
+
+        DroneSquadMember member = new DroneSquadMember
+        {
+            droneObject = droneObj,
+            followTarget = followTarget,
+            tacticalWaypoint = waypointObj.transform,
+            brain = brain,
+            role = assignedRole,
+            droneIndex = index,
+            hasArrivedAtFinalSlot = false,
+            arrivalTimestamp = 0f,
+            initialized = false
+        };
+
+        brain.Initialize(this, member);
+        squad.Add(member);
+
+        ApplyDirectorSettingsToDrone(member);
+
+        return member;
+    }
+
+    /// <summary>
+    /// Applies authoritative DroneDirector configuration to an individual drone's navigation, FCS, hardware, and AI brain.
+    /// </summary>
+    public void ApplyDirectorSettingsToDrone(DroneSquadMember member)
+    {
+        if (member == null || member.droneObject == null) return;
+
+        // 1. Navigation & Avoidance
+        if (member.followTarget != null)
+        {
+            member.followTarget.SyncFromDirector(this);
+        }
+
+        // 2. Flight Control System (FCS) & Cascading PID Controllers
+        FlightControlSystem fcs = member.droneObject.GetComponent<FlightControlSystem>();
+        if (fcs != null)
+        {
+            fcs.ApplyFlightSettings(
+                maxForwardSpeed, maxSideSpeed, maxTiltAngle,
+                maxYawRate, maxPitchRate, maxRollRate,
+                maxMotorForce, maxClimbSpeed,
+                velocityKp, velocityKi, velocityKd,
+                pitchAngleKp, rollAngleKp,
+                rateKp, rateKd,
+                yawRateKp, altitudeKp
+            );
+        }
+
+        // 3. Drone Hardware & Rigidbody physics
+        DroneHardware dh = member.droneObject.GetComponent<DroneHardware>();
+        if (dh != null)
+        {
+            dh.ApplyHardwareSettings(droneMass, linearDamping, angularDamping);
+        }
+
+        // 4. Tactical AI Brain & Personality
+        if (member.brain != null)
+        {
+            member.brain.SyncFromDirector(this);
+        }
+    }
+
+    /// <summary>
+    /// Broadcasts authoritative settings from DroneDirector to all active drones in the squad.
+    /// </summary>
+    public void ApplyDirectorSettingsToSquad()
+    {
+        for (int i = 0; i < squad.Count; i++)
+        {
+            if (squad[i] != null && squad[i].droneObject != null)
+            {
+                ApplyDirectorSettingsToDrone(squad[i]);
+            }
+        }
+    }
+
+    private float _lastSettingsSyncTime = 0f;
+    private int _lastSettingsHash = 0;
+
+    private int ComputeSettingsHash()
+    {
+        unchecked
+        {
+            int hash = 17;
+            hash = hash * 31 + maxForwardSpeed.GetHashCode();
+            hash = hash * 31 + maxSideSpeed.GetHashCode();
+            hash = hash * 31 + maxTiltAngle.GetHashCode();
+            hash = hash * 31 + maxMotorForce.GetHashCode();
+            hash = hash * 31 + droneMass.GetHashCode();
+            hash = hash * 31 + linearDamping.GetHashCode();
+            hash = hash * 31 + angularDamping.GetHashCode();
+            hash = hash * 31 + cruiseSpeed.GetHashCode();
+            hash = hash * 31 + approachSpeed.GetHashCode();
+            hash = hash * 31 + attackSpeed.GetHashCode();
+            hash = hash * 31 + disengageSpeed.GetHashCode();
+            hash = hash * 31 + stopDistance.GetHashCode();
+            hash = hash * 31 + brakingDistance.GetHashCode();
+            hash = hash * 31 + turnSpeed.GetHashCode();
+            hash = hash * 31 + maxYawRate.GetHashCode();
+            hash = hash * 31 + maxPitchRate.GetHashCode();
+            hash = hash * 31 + maxRollRate.GetHashCode();
+            hash = hash * 31 + maxBankAngle.GetHashCode();
+            hash = hash * 31 + bankAmount.GetHashCode();
+            hash = hash * 31 + steeringSmoothing.GetHashCode();
+            hash = hash * 31 + hoverHeight.GetHashCode();
+            hash = hash * 31 + minAltitude.GetHashCode();
+            hash = hash * 31 + maxAltitude.GetHashCode();
+            hash = hash * 31 + maxClimbSpeed.GetHashCode();
+            hash = hash * 31 + attackDistance.GetHashCode();
+            hash = hash * 31 + repositionDistance.GetHashCode();
+            hash = hash * 31 + orbitRadius.GetHashCode();
+            hash = hash * 31 + attackCooldown.GetHashCode();
+            hash = hash * 31 + velocityKp.GetHashCode();
+            hash = hash * 31 + velocityKi.GetHashCode();
+            hash = hash * 31 + velocityKd.GetHashCode();
+            hash = hash * 31 + pitchAngleKp.GetHashCode();
+            hash = hash * 31 + rollAngleKp.GetHashCode();
+            hash = hash * 31 + rateKp.GetHashCode();
+            hash = hash * 31 + rateKd.GetHashCode();
+            hash = hash * 31 + yawRateKp.GetHashCode();
+            hash = hash * 31 + altitudeKp.GetHashCode();
+            return hash;
+        }
+    }
+
+    /// <summary>
+    /// Detects runtime Inspector changes and automatically syncs them across all squad drones.
+    /// </summary>
+    public void CheckAndApplySettingChanges()
+    {
+        if (Time.time - _lastSettingsSyncTime < 0.1f) return;
+        _lastSettingsSyncTime = Time.time;
+
+        int currentHash = ComputeSettingsHash();
+        if (currentHash != _lastSettingsHash)
+        {
+            _lastSettingsHash = currentHash;
+            ApplyDirectorSettingsToSquad();
+        }
+    }
+
+    private void OnValidate()
+    {
+        if (Application.isPlaying && squad != null && squad.Count > 0)
+        {
+            ApplyDirectorSettingsToSquad();
+        }
+    }
+
     // Finds the initial target and initializes squad drones.
     private void Start()
     {
@@ -924,12 +1263,9 @@ public class DroneDirector : MonoBehaviour
                 health.damageSlowdownMultiplier = 0.70f;
                 health.SetLaserTargeted(false);
             }
-
-            if (squad[i] != null && squad[i].followTarget != null)
-            {
-                squad[i].followTarget.stopDistance = 0.25f;
-            }
         }
+
+        ApplyDirectorSettingsToSquad();
 
         float initialDist = (target != null) ? Vector3.Distance(transform.position, target.position) : 50f;
         if (initialDist > engagementDistance)
@@ -945,6 +1281,8 @@ public class DroneDirector : MonoBehaviour
     // Updates target tracking, combat state, and squad formation flight each frame.
     private void Update()
     {
+        CheckAndApplySettingChanges();
+
         if (target == null && !targetEliminated)
         {
             FindTargetSafely();
@@ -1749,38 +2087,31 @@ public class DroneDirector : MonoBehaviour
 
             if (member.followTarget != null)
             {
-                member.followTarget.moveSpeed = 0f;
+                member.followTarget.moveSpeed = cruiseSpeed * 0.5f;
+                member.followTarget.stopDistance = 0.5f;
             }
 
             if (member.brain != null)
             {
-                member.brain.currentFlightSpeed = 0f;
+                member.brain.currentFlightSpeed = cruiseSpeed * 0.5f;
             }
 
-            member.droneObject.transform.position = Vector3.MoveTowards(
-                member.droneObject.transform.position,
-                slot,
-                Time.deltaTime * 5.0f
-            );
-
-            Quaternion targetRot = Quaternion.LookRotation(victoryForward, Vector3.up);
-            member.droneObject.transform.rotation = Quaternion.Slerp(
-                member.droneObject.transform.rotation,
-                targetRot,
-                Time.deltaTime * 6.0f
-            );
-
-            DroneInputs inputs = member.droneObject.GetComponent<DroneInputs>();
-            if (inputs != null)
+            // Once arrived close to formation slot, hold stable hover
+            float distToSlot = Vector3.Distance(member.droneObject.transform.position, slot);
+            if (distToSlot <= 0.8f)
             {
-                inputs.SetAIInputs(0f, 0f, 0f, 0f);
-            }
+                DroneInputs inputs = member.droneObject.GetComponent<DroneInputs>();
+                if (inputs != null)
+                {
+                    inputs.SetAIInputs(0f, 0f, 0f, 0f);
+                }
 
-            Rigidbody rb = member.droneObject.GetComponent<Rigidbody>();
-            if (rb != null)
-            {
-                rb.linearVelocity = Vector3.MoveTowards(rb.linearVelocity, Vector3.zero, Time.deltaTime * 12f);
-                rb.angularVelocity = Vector3.MoveTowards(rb.angularVelocity, Vector3.zero, Time.deltaTime * 12f);
+                Rigidbody rb = member.droneObject.GetComponent<Rigidbody>();
+                if (rb != null)
+                {
+                    rb.linearVelocity = Vector3.MoveTowards(rb.linearVelocity, Vector3.zero, Time.deltaTime * 6f);
+                    rb.angularVelocity = Vector3.MoveTowards(rb.angularVelocity, Vector3.zero, Time.deltaTime * 6f);
+                }
             }
         }
     }
@@ -2230,63 +2561,7 @@ public class DroneDirector : MonoBehaviour
             GameObject droneObj = Instantiate(template, spawnPos, Quaternion.identity);
             droneObj.SetActive(true);
 
-            GameObject waypointObj = new GameObject($"TacticalWaypoint_{i + 1}");
-            waypointObj.transform.position = spawnPos;
-            waypointObj.transform.SetParent(transform);
-
-            DroneNPCFollowTarget followTarget = droneObj.GetComponent<DroneNPCFollowTarget>();
-            if (followTarget == null)
-            {
-                followTarget = droneObj.AddComponent<DroneNPCFollowTarget>();
-            }
-
-            followTarget.enabled = true;
-            followTarget.targetBox = waypointObj.transform;
-            followTarget.stopDistance = 0.5f;
-            followTarget.moveSpeed = cruiseSpeed;
-            followTarget.requireTargetLock = false;
-
-            FlightControlSystem fcs = droneObj.GetComponent<FlightControlSystem>();
-            if (fcs != null) fcs.enabled = false;
-
-            DroneHardware dh = droneObj.GetComponent<DroneHardware>();
-            if (dh != null) dh.enabled = false;
-
-            DroneInputs inputs = droneObj.GetComponent<DroneInputs>();
-            if (inputs != null) inputs.isAIControlled = true;
-
-            DroneBrain brain = droneObj.GetComponent<DroneBrain>();
-            if (brain == null)
-            {
-                brain = droneObj.AddComponent<DroneBrain>();
-            }
-
-            DroneHealth health = droneObj.GetComponent<DroneHealth>();
-            if (health == null)
-            {
-                health = droneObj.AddComponent<DroneHealth>();
-            }
-            health.damageSlowdownMultiplier = 0.70f;
-            health.SetLaserTargeted(false);
-
-            DroneTacticalRole assignedRole = (i == 0) ? DroneTacticalRole.Distractor : DroneTacticalRole.Flanker;
-            droneObj.name = $"TacticalDrone_{i + 1}_{assignedRole}";
-
-            DroneSquadMember member = new DroneSquadMember
-            {
-                droneObject = droneObj,
-                followTarget = followTarget,
-                tacticalWaypoint = waypointObj.transform,
-                brain = brain,
-                role = assignedRole,
-                droneIndex = i,
-                hasArrivedAtFinalSlot = false,
-                arrivalTimestamp = 0f,
-                initialized = false
-            };
-
-            brain.Initialize(this, member);
-            squad.Add(member);
+            ConfigureDrone(droneObj, spawnPos, i);
         }
 
         WireIgnoredColliders();

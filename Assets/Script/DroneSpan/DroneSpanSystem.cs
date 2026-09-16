@@ -475,7 +475,7 @@ public class DroneSpanSystem : MonoBehaviour
     // ── Shared per-drone setup ────────────────────────────────────────────────
 
     /// <summary>
-    /// Instantiates and fully configures a single drone at the supplied (pre-validated) world position.
+    /// Instantiates and fully configures a single drone at the supplied (pre-validated) world position via DroneDirector.
     /// </summary>
     private void SpawnSingleDrone(GameObject template, int index, Vector3 spawnPos)
     {
@@ -483,59 +483,7 @@ public class DroneSpanSystem : MonoBehaviour
         GameObject droneObj = Instantiate(template, spawnPos, Quaternion.identity);
         droneObj.SetActive(true);
 
-        // Dedicated tactical waypoint parented to the director transform
-        GameObject waypointObj = new GameObject($"TacticalWaypoint_{index + 1}");
-        waypointObj.transform.position = spawnPos;
-        waypointObj.transform.SetParent(droneDirector.transform);
-
-        // Navigation
-        DroneNPCFollowTarget followTarget = droneObj.GetComponent<DroneNPCFollowTarget>();
-        if (followTarget == null) followTarget = droneObj.AddComponent<DroneNPCFollowTarget>();
-        followTarget.enabled = true;
-        followTarget.targetBox = waypointObj.transform;
-        followTarget.stopDistance = 0.5f;
-        followTarget.moveSpeed = droneDirector.cruiseSpeed;
-        followTarget.requireTargetLock = false;
-
-        // Disable manual flight systems
-        FlightControlSystem fcs = droneObj.GetComponent<FlightControlSystem>();
-        if (fcs != null) fcs.enabled = false;
-
-        DroneHardware dh = droneObj.GetComponent<DroneHardware>();
-        if (dh != null) dh.enabled = false;
-
-        DroneInputs inputs = droneObj.GetComponent<DroneInputs>();
-        if (inputs != null) inputs.isAIControlled = true;
-
-        // AI brain
-        DroneBrain brain = droneObj.GetComponent<DroneBrain>();
-        if (brain == null) brain = droneObj.AddComponent<DroneBrain>();
-
-        // Health – 30% laser slowdown, clear targeting state
-        DroneHealth health = droneObj.GetComponent<DroneHealth>();
-        if (health == null) health = droneObj.AddComponent<DroneHealth>();
-        health.damageSlowdownMultiplier = 0.70f;
-        health.SetLaserTargeted(false);
-
-        // Role assignment
-        DroneTacticalRole assignedRole = (index == 0) ? DroneTacticalRole.Distractor : DroneTacticalRole.Flanker;
-        droneObj.name = $"TacticalDrone_{index + 1}_{assignedRole}";
-
-        DroneDirector.DroneSquadMember member = new DroneDirector.DroneSquadMember
-        {
-            droneObject = droneObj,
-            followTarget = followTarget,
-            tacticalWaypoint = waypointObj.transform,
-            brain = brain,
-            role = assignedRole,
-            droneIndex = index,
-            hasArrivedAtFinalSlot = false,
-            arrivalTimestamp = 0f,
-            initialized = false
-        };
-
-        brain.Initialize(droneDirector, member);
-        droneDirector.squad.Add(member);
+        droneDirector.ConfigureDrone(droneObj, spawnPos, index);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

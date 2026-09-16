@@ -73,9 +73,14 @@ namespace Drone.Runtime.FlightModes
                     inputs.Yaw * maxYawRate,
                     targetRates.y
                 ),
-                Throttle = throttle
+                Throttle = throttle,
+                TargetAngles = targetAngles
             };
         }
+
+        public VelocityToAngleController VelocityController => velocityController;
+        public AngleToRateController AngleController => angleController;
+        public AltitudeController AltitudeController => altitudeController;
 
         /// <summary>
         /// Resets all internal cascade controller states (integrators, derivative memory).

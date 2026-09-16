@@ -6,9 +6,9 @@ using UnityEngine;
 public class AltitudeController
 {
     private readonly PIDController altitudePID;
-    private readonly float maxClimbSpeed;
-    private readonly float hoverForce;
-    private readonly float maxTotalThrust;
+    private float maxClimbSpeed;
+    private float hoverForce;
+    private float maxTotalThrust;
 
     /// <summary>
     /// Initializes altitude controller gains, velocity limits, and thrust capabilities.
@@ -57,6 +57,20 @@ public class AltitudeController
         float requestedTotalForce = compensatedHoverForce + correctionForce;
 
         return Mathf.Clamp01(requestedTotalForce / maxTotalThrust);
+    }
+
+    /// <summary>
+    /// Updates altitude PID gains, climb speed, and thrust limits dynamically at runtime.
+    /// </summary>
+    public void UpdateGains(
+        float kp, float ki, float kd,
+        float integralLimit, float outputLimit,
+        float maxClimbSpeed, float hoverForce, float maxTotalThrust)
+    {
+        altitudePID.SetGains(kp, ki, kd, integralLimit, outputLimit);
+        this.maxClimbSpeed = Mathf.Max(0.1f, maxClimbSpeed);
+        this.hoverForce = hoverForce;
+        this.maxTotalThrust = Mathf.Max(maxTotalThrust, 0.0001f);
     }
 
     /// <summary>

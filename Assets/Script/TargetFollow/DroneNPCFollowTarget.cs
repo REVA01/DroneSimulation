@@ -49,36 +49,40 @@ public class DroneNPCFollowTarget : MonoBehaviour
     private bool _isAvoiding;
     private DroneHealth _droneHealth;
     private Rigidbody _rb;
+    private DroneInputs _droneInputs;
+    private FlightControlSystem _fcs;
+    private DroneHardware _droneHardware;
 
     /// <summary>
-    /// Caches the Rigidbody and forces AI control mode on DroneInputs to prevent key conflicts with cannon controls.
+    /// Configures Rigidbody for physics simulation and connects DroneInputs, FlightControlSystem, and DroneHardware.
     /// </summary>
     private void Awake()
     {
         _rb = GetComponent<Rigidbody>();
         if (_rb != null)
         {
-            _rb.useGravity = false;
-            _rb.isKinematic = true;
+            _rb.isKinematic = false;
+            _rb.useGravity = true;
         }
 
-        // Ensure this NPC drone does not capture manual player keyboard inputs (WASD)
-        DroneInputs inputs = GetComponent<DroneInputs>();
-        if (inputs != null)
-        {
-            inputs.isAIControlled = true;
-        }
+        _droneInputs = GetComponent<DroneInputs>();
+        if (_droneInputs == null)
+            _droneInputs = gameObject.AddComponent<DroneInputs>();
+        _droneInputs.isAIControlled = true;
 
-        // If FlightControlSystem is on this same drone, disable it so its motor mixing does not fight NPC waypoint navigation
-        FlightControlSystem fcs = GetComponent<FlightControlSystem>();
-        if (fcs != null && enabled)
-        {
-            fcs.enabled = false;
-        }
+        _fcs = GetComponent<FlightControlSystem>();
+        if (_fcs == null)
+            _fcs = gameObject.AddComponent<FlightControlSystem>();
+        _fcs.enabled = true;
+
+        _droneHardware = GetComponent<DroneHardware>();
+        if (_droneHardware == null)
+            _droneHardware = gameObject.AddComponent<DroneHardware>();
+        _droneHardware.enabled = true;
     }
 
     /// <summary>
-    /// Validates initial target lock requirements on startup.
+    /// Validates initial target lock requirements and synchronizes with DroneDirector on startup.
     /// </summary>
     private void Start()
     {
@@ -87,15 +91,35 @@ public class DroneNPCFollowTarget : MonoBehaviour
         {
             requireTargetLock = true;
         }
+
+        if (DroneDirector.Instance != null)
+        {
+            SyncFromDirector(DroneDirector.Instance);
+        }
     }
 
     /// <summary>
-    /// Evaluates target validity, lock state, distance limits, and steers the drone towards the target with obstacle avoidance.
+    /// Applies authoritative navigation, rotation, and avoidance parameters centrally from DroneDirector.
+    /// </summary>
+    public void SyncFromDirector(DroneDirector director)
+    {
+        if (director == null) return;
+
+        moveSpeed = director.cruiseSpeed;
+        stopDistance = director.stopDistance;
+        autoUnlockDistance = director.detectionRange;
+        rotationSpeed = director.turnSpeed;
+        bankAmount = director.bankAmount;
+        maxBankAngle = director.maxBankAngle;
+        steeringSmoothSpeed = director.steeringSmoothing;
+    }
+
+    /// <summary>
+    /// Evaluates target validity, lock state, distance limits, and converts obstacle-avoiding flight intent into normalized DroneInputs.
     /// </summary>
     private void Update()
     {
         // 1. Target existence alone should never make the drone start following if lock is required
-        // When unlocked (manually or automatically), movement must stop IMMEDIATELY!
         if (requireTargetLock && !isTargetLocked)
         {
             StopFollowing();
@@ -118,22 +142,22 @@ public class DroneNPCFollowTarget : MonoBehaviour
         Vector3 toTarget = targetBox.position - transform.position;
         float distance = toTarget.magnitude;
 
-        // 3. Automatic distance-based unlock: If target moved beyond autoUnlockDistance, immediately stop!
+        // 3. Automatic distance-based unlock: If target moved beyond autoUnlockDistance, immediately stop
         if (requireTargetLock && autoUnlockDistance > 0f && distance > autoUnlockDistance)
         {
             UnlockTarget();
             return;
         }
 
-        // Smooth stop deceleration when approaching stop distance to eliminate 1-frame jitter
+        // Target reached / arrived within stop distance: command stable hover
         if (distance <= stopDistance)
         {
-            _currentMoveDir = Vector3.Lerp(_currentMoveDir, Vector3.zero, 10f * Time.deltaTime);
-            if (_currentMoveDir.sqrMagnitude < 0.001f)
+            _currentMoveDir = Vector3.zero;
+            if (_droneInputs != null)
             {
-                _currentMoveDir = Vector3.zero;
-                return;
+                _droneInputs.SetAIInputs(0f, 0f, 0f, 0f);
             }
+            return;
         }
 
         Vector3 desiredDir = toTarget.normalized;
@@ -149,7 +173,7 @@ public class DroneNPCFollowTarget : MonoBehaviour
 
         Vector3 safeDir = GetSafeDirection(desiredDir);
         if (safeDir.sqrMagnitude < 0.001f)
-            return;
+            safeDir = desiredDir;
 
         if (_currentMoveDir.sqrMagnitude < 0.001f)
         {
@@ -173,18 +197,43 @@ public class DroneNPCFollowTarget : MonoBehaviour
             effectiveSpeed *= 0.70f;
         }
 
-        float moveAmount = Mathf.Min(effectiveSpeed * Time.deltaTime, Mathf.Max(0f, distance - stopDistance));
-        if (moveAmount > 0.0001f)
+        // Dynamic speed and arrival modulation
+        float maxSpeed = (_fcs != null && _fcs.maxForwardSpeed > 0f) ? _fcs.maxForwardSpeed : Mathf.Max(moveSpeed, 10f);
+        float cruiseSpeedFactor = Mathf.Clamp01(effectiveSpeed / maxSpeed);
+        float arrivalFactor = Mathf.Clamp01((distance - stopDistance) / Mathf.Max(stopDistance * 1.5f, 1.5f));
+        float driveFactor = cruiseSpeedFactor * arrivalFactor;
+
+        // Transform world-space avoidance direction into drone local frame for cyclic control (Pitch & Roll)
+        Vector3 localDir = transform.InverseTransformDirection(_currentMoveDir);
+        float pitch = Mathf.Clamp(localDir.z * driveFactor, -1f, 1f);
+        float roll = Mathf.Clamp(localDir.x * driveFactor, -1f, 1f);
+
+        // Altitude control (Throttle)
+        float altitudeDelta = targetBox.position.y - transform.position.y;
+        float throttle = 0f;
+        if (Mathf.Abs(altitudeDelta) > 0.15f)
         {
-            transform.Translate(_currentMoveDir * moveAmount, Space.World);
+            throttle = Mathf.Clamp(altitudeDelta / 2.0f, -1f, 1f);
         }
 
-        if (_rb != null && !_rb.isKinematic)
+        // Heading / Yaw alignment: orient drone nose toward the target
+        Vector3 flatForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+        Vector3 flatAim = Vector3.ProjectOnPlane(toTarget, Vector3.up);
+        float yaw = 0f;
+        if (flatForward.sqrMagnitude > 0.001f && flatAim.sqrMagnitude > 0.001f)
         {
-            _rb.linearVelocity = _currentMoveDir * effectiveSpeed;
+            float yawAngle = Vector3.SignedAngle(flatForward, flatAim, Vector3.up);
+            if (Mathf.Abs(yawAngle) > 2.0f)
+            {
+                yaw = Mathf.Clamp(yawAngle / 35.0f, -1f, 1f);
+            }
         }
 
-        ApplyFlightRotation(_currentMoveDir);
+        // Feed flight intentions to the physical FlightControlSystem pipeline
+        if (_droneInputs != null)
+        {
+            _droneInputs.SetAIInputs(pitch, roll, yaw, throttle);
+        }
     }
 
     /// <summary>
@@ -362,7 +411,7 @@ public class DroneNPCFollowTarget : MonoBehaviour
     }
 
     /// <summary>
-    /// Immediately stops all following behavior and ends tracking.
+    /// Immediately stops all following behavior and commands the flight control system into a stable hover.
     /// </summary>
     public void StopFollowing()
     {
@@ -372,11 +421,9 @@ public class DroneNPCFollowTarget : MonoBehaviour
         _avoidCommitTimer = 0f;
         _isAvoiding = false;
 
-        Rigidbody rb = GetComponent<Rigidbody>();
-        if (rb != null)
+        if (_droneInputs != null)
         {
-            rb.linearVelocity = Vector3.zero;
-            rb.angularVelocity = Vector3.zero;
+            _droneInputs.SetAIInputs(0f, 0f, 0f, 0f);
         }
     }
 }

@@ -62,6 +62,21 @@ public class RateController
     }
 
     /// <summary>
+    /// Updates pitch, roll, and yaw angular rate PID gains dynamically at runtime.
+    /// </summary>
+    public void UpdateGains(
+        float pitchKp, float pitchKi, float pitchKd,
+        float rollKp, float rollKi, float rollKd,
+        float yawKp, float yawKi, float yawKd,
+        float integralLimit,
+        float pitchOutputLimit, float rollOutputLimit, float yawOutputLimit)
+    {
+        pitchPID.SetGains(pitchKp, pitchKi, pitchKd, integralLimit, pitchOutputLimit);
+        rollPID.SetGains(rollKp, rollKi, rollKd, integralLimit, rollOutputLimit);
+        yawPID.SetGains(yawKp, yawKi, yawKd, integralLimit, yawOutputLimit);
+    }
+
+    /// <summary>
     /// Clears rate PID integrator memory across all three axes.
     /// </summary>
     public void Reset()

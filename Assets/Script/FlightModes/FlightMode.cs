@@ -32,6 +32,7 @@ namespace Drone.Runtime.FlightModes
     {
         public Vector3 TargetRate;
         public float Throttle;
+        public Vector2 TargetAngles;
     }
 
     /// <summary>

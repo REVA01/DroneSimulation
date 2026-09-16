@@ -7,12 +7,14 @@ public class VelocityToAngleController
 {
     private readonly PIDController rollPID;
     private readonly PIDController pitchPID;
-    private readonly float maxTilt;
+    private float maxTilt;
     private readonly float maxTiltRate;
     private readonly float brakingDeadband;
     private readonly float maxBrakingSpeed;
     private Vector2 previousAngles;
     private bool hasPreviousAngles;
+
+    public Vector2 LastTargetAngles => hasPreviousAngles ? previousAngles : Vector2.zero;
 
     /// <summary>
     /// Initializes velocity-to-attitude PID controllers, maximum tilt bounds, and deceleration parameters.
@@ -128,6 +130,20 @@ public class VelocityToAngleController
         hasPreviousAngles = true;
 
         return targetAngles;
+    }
+
+    /// <summary>
+    /// Updates PID gains, limits, and maximum tilt angle dynamically at runtime.
+    /// </summary>
+    public void UpdateGains(
+        float rollKp, float rollKi, float rollKd,
+        float pitchKp, float pitchKi, float pitchKd,
+        float integralLimit, float outputLimit,
+        float maxTilt)
+    {
+        rollPID.SetGains(rollKp, rollKi, rollKd, integralLimit, outputLimit);
+        pitchPID.SetGains(pitchKp, pitchKi, pitchKd, integralLimit, outputLimit);
+        this.maxTilt = maxTilt;
     }
 
     /// <summary>

@@ -113,6 +113,8 @@ public class FlightControlSystem : MonoBehaviour
         if (droneHardware != null && rb != null)
         {
             rb.mass = droneHardware.mass;
+            rb.isKinematic = false;
+            rb.useGravity = true;
         }
 
         RecalculateHoverParameters();
@@ -153,6 +155,92 @@ public class FlightControlSystem : MonoBehaviour
     }
 
     /// <summary>
+    /// Applies authoritative flight parameters and PID gains centrally from DroneDirector.
+    /// </summary>
+    public void ApplyFlightSettings(
+        float maxForwardSpeed, float maxSideSpeed, float maxTiltAngle,
+        float maxYawRate, float maxPitchRate, float maxRollRate,
+        float maxMotorForce, float maxClimbSpeed,
+        float velocityKp, float velocityKi, float velocityKd,
+        float pitchAngleKp, float rollAngleKp,
+        float rateKp, float rateKd,
+        float yawRateKp, float altitudeKp)
+    {
+        this.maxForwardSpeed = maxForwardSpeed;
+        this.maxSideSpeed = maxSideSpeed;
+        this.maxTiltAngle = maxTiltAngle;
+        this.maxYawRate = maxYawRate;
+        this.maxPitchRate = maxPitchRate;
+        this.maxRollRate = maxRollRate;
+        this.maxMotorForce = maxMotorForce;
+        this.maxClimbSpeed = maxClimbSpeed;
+
+        this.velocityKp = velocityKp;
+        this.velocityKi = velocityKi;
+        this.velocityKd = velocityKd;
+
+        this.pitchAngleKp = pitchAngleKp;
+        this.rollAngleKp = rollAngleKp;
+
+        this.pitchRateKp = rateKp;
+        this.rollRateKp = rateKp;
+        this.pitchRateKd = rateKd;
+        this.rollRateKd = rateKd;
+
+        this.yawRateKp = yawRateKp;
+        this.altitudeKp = altitudeKp;
+
+        RecalculateHoverParameters();
+        SyncControllerParameters();
+    }
+
+    /// <summary>
+    /// Synchronizes public Inspector / runtime GUI tuning parameters to active controller instances.
+    /// </summary>
+    public void SyncControllerParameters()
+    {
+        if (velocityController != null)
+        {
+            velocityController.UpdateGains(
+                velocityKp, velocityKi, velocityKd,
+                velocityKp, velocityKi, velocityKd,
+                velocityIntegralLimit, velocityOutputLimit,
+                maxTiltAngle
+            );
+        }
+
+        if (angleController != null)
+        {
+            angleController.UpdateGains(
+                pitchAngleKp, pitchAngleKi, pitchAngleKd,
+                rollAngleKp, rollAngleKi, rollAngleKd,
+                Mathf.Max(pitchAngleIntegralLimit, rollAngleIntegralLimit),
+                Mathf.Max(pitchAngleOutputLimit, rollAngleOutputLimit)
+            );
+        }
+
+        if (rateController != null)
+        {
+            rateController.UpdateGains(
+                pitchRateKp, pitchRateKi, pitchRateKd,
+                rollRateKp, rollRateKi, rollRateKd,
+                yawRateKp, yawRateKi, yawRateKd,
+                Mathf.Max(pitchRateIntegralLimit, Mathf.Max(rollRateIntegralLimit, yawRateIntegralLimit)),
+                pitchRateOutputLimit, rollRateOutputLimit, yawRateOutputLimit
+            );
+        }
+
+        if (altitudeController != null)
+        {
+            altitudeController.UpdateGains(
+                altitudeKp, altitudeKi, altitudeKd,
+                altitudeIntegralLimit, altitudeOutputLimit,
+                maxClimbSpeed, hoverForce, maxMotorForce * 4f
+            );
+        }
+    }
+
+    /// <summary>
     /// Recalculates hover force and normalized throttle required to balance gravity.
     /// </summary>
     public void RecalculateHoverParameters()
@@ -160,6 +248,15 @@ public class FlightControlSystem : MonoBehaviour
         float droneMass = (rb != null) ? rb.mass : 1f;
         hoverForce = droneMass * Physics.gravity.magnitude;
         hoverThrottle = Mathf.Clamp01(hoverForce / Mathf.Max(maxMotorForce * 4f, 0.001f));
+
+        if (altitudeController != null)
+        {
+            altitudeController.UpdateGains(
+                altitudeKp, altitudeKi, altitudeKd,
+                altitudeIntegralLimit, altitudeOutputLimit,
+                maxClimbSpeed, hoverForce, maxMotorForce * 4f
+            );
+        }
     }
 
     /// <summary>
@@ -169,6 +266,8 @@ public class FlightControlSystem : MonoBehaviour
     {
         if (droneHardware == null || droneInputs == null || velocityMode == null || rb == null)
             return;
+
+        SyncControllerParameters();
 
         float dt = Time.fixedDeltaTime;
 
@@ -193,6 +292,8 @@ public class FlightControlSystem : MonoBehaviour
         FlightControlOutput output = velocityMode.Calculate(droneInputs, state, dt);
 
         finalThrottle = output.Throttle;
+        targetRollAngle = output.TargetAngles.x;
+        targetPitchAngle = output.TargetAngles.y;
         targetPitchRate = output.TargetRate.x;
         targetRollRate = output.TargetRate.z;
 

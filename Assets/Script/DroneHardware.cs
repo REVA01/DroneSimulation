@@ -17,6 +17,10 @@ public class DroneHardware : MonoBehaviour
     [Tooltip("Linear damping applied to the Rigidbody to resist drift.")]
     public float linearDamping = 0.2f;
 
+    [Range(0f, 5f)]
+    [Tooltip("Angular damping applied to the Rigidbody to stabilize attitude oscillations.")]
+    public float angularDamping = 1.0f;
+
     [Header("Motor References")]
     [Tooltip("Front-Left motor Transform. Auto-detected by name if unassigned.")]
     public Transform frontLeft;
@@ -39,22 +43,49 @@ public class DroneHardware : MonoBehaviour
     private Rigidbody rb;
 
     /// <summary>
-    /// Configures Rigidbody mass, damping, and automatically resolves unassigned motor transforms.
+    /// Configures Rigidbody mass, damping, center of mass, and automatically resolves motor transforms.
     /// </summary>
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
         if (rb != null)
         {
+            rb.isKinematic = false;
+            rb.useGravity = true;
             rb.mass = mass;
             rb.linearDamping = linearDamping;
+            rb.angularDamping = angularDamping;
+            // Offset center of mass slightly below thrust plane for physical pendulum self-righting stability
+            rb.centerOfMass = new Vector3(0f, -0.05f, 0f);
         }
 
         AutoDetectMotorTransforms();
     }
 
     /// <summary>
+    /// Applies physical mass and damping configuration centrally from DroneDirector.
+    /// </summary>
+    public void ApplyHardwareSettings(float mass, float linearDamping, float angularDamping)
+    {
+        this.mass = mass;
+        this.linearDamping = linearDamping;
+        this.angularDamping = angularDamping;
+
+        if (rb == null)
+            rb = GetComponent<Rigidbody>();
+
+        if (rb != null)
+        {
+            rb.mass = mass;
+            rb.linearDamping = linearDamping;
+            rb.angularDamping = angularDamping;
+            rb.centerOfMass = new Vector3(0f, -0.05f, 0f);
+        }
+    }
+
+    /// <summary>
     /// Scans child transforms to locate and assign motor references if left unassigned in the Inspector.
+    /// Matches FLPropeller, FRPropeller, BlPropeller, BRPropeller, or standard abbreviations.
     /// </summary>
     private void AutoDetectMotorTransforms()
     {
@@ -64,24 +95,19 @@ public class DroneHardware : MonoBehaviour
             if (child == transform) continue;
             string name = child.name.Trim().ToLowerInvariant();
 
-            if (frontLeft == null && (name == "fl" || name.Contains("frontleft") || name.Contains("front_left")))
+            if (frontLeft == null && (name == "fl" || name.StartsWith("fl") || name.Contains("frontleft") || name.Contains("front_left")))
                 frontLeft = child;
-            else if (frontRight == null && (name == "fr" || name.Contains("frontright") || name.Contains("front_right")))
+            else if (frontRight == null && (name == "fr" || name.StartsWith("fr") || name.Contains("frontright") || name.Contains("front_right")))
                 frontRight = child;
-            else if (backLeft == null && (name == "bl" || name.Contains("backleft") || name.Contains("back_left") || name.Contains("rearleft")))
+            else if (backLeft == null && (name == "bl" || name.StartsWith("bl") || name.Contains("backleft") || name.Contains("back_left") || name.Contains("rearleft")))
                 backLeft = child;
-            else if (backRight == null && (name == "br" || name.Contains("backright") || name.Contains("back_right") || name.Contains("rearright")))
+            else if (backRight == null && (name == "br" || name.StartsWith("br") || name.Contains("backright") || name.Contains("back_right") || name.Contains("rearright")))
                 backRight = child;
-        }
-
-        if (frontLeft == null || frontRight == null || backLeft == null || backRight == null)
-        {
-            Debug.LogWarning($"[DroneHardware] One or more motor transforms could not be resolved on {name}. Motor forces may not apply correctly.", this);
         }
     }
 
     /// <summary>
-    /// Applies individual motor thrust forces at propeller positions and relative yaw torque to the Rigidbody.
+    /// Applies individual motor thrust forces at propeller positions (or geometric fallback corners) and relative yaw torque to the Rigidbody.
     /// </summary>
     /// <param name="fl">Front-Left motor thrust force in Newtons.</param>
     /// <param name="fr">Front-Right motor thrust force in Newtons.</param>
@@ -94,17 +120,23 @@ public class DroneHardware : MonoBehaviour
         BLForce = bl;
         BRForce = br;
 
-        if (rb == null || frontLeft == null || frontRight == null || backLeft == null || backRight == null)
+        if (rb == null)
         {
             return;
         }
 
         Vector3 forceDirection = transform.up;
 
-        rb.AddForceAtPosition(forceDirection * FLForce, frontLeft.position, ForceMode.Force);
-        rb.AddForceAtPosition(forceDirection * FRForce, frontRight.position, ForceMode.Force);
-        rb.AddForceAtPosition(forceDirection * BLForce, backLeft.position, ForceMode.Force);
-        rb.AddForceAtPosition(forceDirection * BRForce, backRight.position, ForceMode.Force);
+        // Use resolved propeller transforms or calculate geometric quadcopter corner offsets
+        Vector3 flPos = frontLeft != null ? frontLeft.position : transform.TransformPoint(new Vector3(-0.35f, 0.05f, 0.35f));
+        Vector3 frPos = frontRight != null ? frontRight.position : transform.TransformPoint(new Vector3(0.35f, 0.05f, 0.35f));
+        Vector3 blPos = backLeft != null ? backLeft.position : transform.TransformPoint(new Vector3(-0.35f, 0.05f, -0.35f));
+        Vector3 brPos = backRight != null ? backRight.position : transform.TransformPoint(new Vector3(0.35f, 0.05f, -0.35f));
+
+        rb.AddForceAtPosition(forceDirection * FLForce, flPos, ForceMode.Force);
+        rb.AddForceAtPosition(forceDirection * FRForce, frPos, ForceMode.Force);
+        rb.AddForceAtPosition(forceDirection * BLForce, blPos, ForceMode.Force);
+        rb.AddForceAtPosition(forceDirection * BRForce, brPos, ForceMode.Force);
 
         float yawTorque = (-FLForce * torqueFactor)
             + (FRForce * torqueFactor)

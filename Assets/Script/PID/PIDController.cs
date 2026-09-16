@@ -5,11 +5,11 @@ using UnityEngine;
 /// </summary>
 public class PIDController
 {
-    private readonly float kp;
-    private readonly float ki;
-    private readonly float kd;
-    private readonly float integralLimit;
-    private readonly float outputLimit;
+    private float kp;
+    private float ki;
+    private float kd;
+    private float integralLimit;
+    private float outputLimit;
 
     private const float DerivativeFilterAlpha = 0.15f;
     private const float MaxDt = 0.05f;
@@ -34,6 +34,18 @@ public class PIDController
         this.kd = kd;
         this.integralLimit = integralLimit;
         this.outputLimit = outputLimit;
+    }
+
+    /// <summary>
+    /// Updates PID gains and limits dynamically at runtime for live tuning.
+    /// </summary>
+    public void SetGains(float kp, float ki, float kd, float integralLimit = -1f, float outputLimit = -1f)
+    {
+        this.kp = kp;
+        this.ki = ki;
+        this.kd = kd;
+        if (integralLimit >= 0f) this.integralLimit = integralLimit;
+        if (outputLimit >= 0f) this.outputLimit = outputLimit;
     }
 
     /// <summary>
