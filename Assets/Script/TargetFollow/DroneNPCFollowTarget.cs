@@ -42,6 +42,28 @@ public class DroneNPCFollowTarget : MonoBehaviour
     public float bankAmount = 1.2f;
     public float maxBankAngle = 35f;
 
+    [Header("Final Formation Arrival")]
+    [Tooltip("Whether the drone is currently executing final formation approach and alignment.")]
+    public bool isFormationMode = false;
+    [Tooltip("Target world position of assigned formation slot.")]
+    public Vector3 formationTargetPos;
+    [Tooltip("Target forward heading direction vector for final formation orientation.")]
+    public Vector3 formationTargetHeading = Vector3.forward;
+    [Tooltip("Maximum allowed distance error from formation slot before marking position complete.")]
+    public float formationPosTolerance = 0.35f;
+    [Tooltip("Maximum allowed yaw heading error in degrees before marking rotation complete.")]
+    public float formationRotTolerance = 4.0f;
+    [Tooltip("Distance from slot where smooth deceleration begins.")]
+    public float formationDecelDist = 3.0f;
+    [Tooltip("Yaw alignment responsiveness multiplier.")]
+    public float formationAlignStrength = 1.6f;
+    [Tooltip("Minimum safe ground clearance in meters to continuously respect.")]
+    public float minGroundClearance = 2.0f;
+    [Tooltip("LayerMask used to check ground/terrain beneath drone.")]
+    public LayerMask groundCheckLayers = ~0;
+    [Tooltip("True once both position and rotation tolerances are satisfied.")]
+    public bool isFormationComplete = false;
+
     private readonly RaycastHit[] _hitBuffer = new RaycastHit[16];
     private Vector3 _currentMoveDir;
     private Vector3 _committedAvoidDir;
@@ -119,6 +141,13 @@ public class DroneNPCFollowTarget : MonoBehaviour
     /// </summary>
     private void Update()
     {
+        // Dedicated final formation arrival mode
+        if (isFormationMode)
+        {
+            UpdateFormationArrival();
+            return;
+        }
+
         // 1. Target existence alone should never make the drone start following if lock is required
         if (requireTargetLock && !isTargetLocked)
         {
@@ -234,6 +263,201 @@ public class DroneNPCFollowTarget : MonoBehaviour
         {
             _droneInputs.SetAIInputs(pitch, roll, yaw, throttle);
         }
+    }
+
+    /// <summary>
+    /// Governs precise approach, smooth deceleration, exact heading alignment, continuous ground clearance, and PID hover stabilization for final formation slots.
+    /// </summary>
+    private void UpdateFormationArrival()
+    {
+        Vector3 myPos = transform.position;
+        Vector3 toSlot = formationTargetPos - myPos;
+        Vector3 horizToSlot = new Vector3(toSlot.x, 0f, toSlot.z);
+        float horizDistance = horizToSlot.magnitude;
+        float altError = Mathf.Abs(toSlot.y);
+        float totalDistance = toSlot.magnitude;
+
+        Vector3 flatForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up);
+        if (flatForward.sqrMagnitude < 0.001f) flatForward = Vector3.forward;
+        flatForward.Normalize();
+
+        Vector3 flatHeading = Vector3.ProjectOnPlane(formationTargetHeading, Vector3.up);
+        if (flatHeading.sqrMagnitude < 0.001f) flatHeading = Vector3.forward;
+        flatHeading.Normalize();
+
+        float yawAngle = Vector3.SignedAngle(flatForward, flatHeading, Vector3.up);
+        float yawError = Mathf.Abs(yawAngle);
+
+        bool inPosTolerance = (horizDistance <= formationPosTolerance) && (altError <= formationPosTolerance);
+        bool inRotTolerance = yawError <= formationRotTolerance;
+
+        // 1. Formation Complete Check & Hysteresis Lock
+        if (isFormationComplete)
+        {
+            // If perturbed significantly outside deadband, re-engage gentle corrections
+            if (horizDistance > formationPosTolerance * 1.5f || altError > formationPosTolerance * 1.5f || yawError > formationRotTolerance * 2.0f)
+            {
+                isFormationComplete = false;
+            }
+            else
+            {
+                // Drone is settled into final slot: stop sending corrections so PID cascade holds rock-solid hover
+                if (_droneInputs != null)
+                {
+                    _droneInputs.SetAIInputs(0f, 0f, 0f, 0f);
+                }
+                return;
+            }
+        }
+
+        if (inPosTolerance && inRotTolerance)
+        {
+            isFormationComplete = true;
+            if (_droneInputs != null)
+            {
+                _droneInputs.SetAIInputs(0f, 0f, 0f, 0f);
+            }
+            return;
+        }
+
+        // 2. Approach Speed with Smooth Deceleration near slot
+        float decelDist = Mathf.Max(formationDecelDist, 1.0f);
+        float targetSpeed = moveSpeed;
+        if (horizDistance <= decelDist)
+        {
+            float t = Mathf.Clamp01(horizDistance / decelDist);
+            // Smooth ease out into arrival, with a healthy minimum speed (1.2 m/s) to avoid creeping stall
+            targetSpeed = Mathf.Lerp(1.2f, moveSpeed, Mathf.SmoothStep(0f, 1f, t));
+        }
+
+        float maxForwardSpeed = (_fcs != null && _fcs.maxForwardSpeed > 0f) ? _fcs.maxForwardSpeed : 25f;
+        float driveFactor = Mathf.Clamp01(targetSpeed / maxForwardSpeed);
+
+        // 3. Cyclic Pitch & Roll in local frame
+        float pitch = 0f;
+        float roll = 0f;
+        if (horizDistance > formationPosTolerance)
+        {
+            Vector3 desiredDir = horizToSlot.normalized;
+            // Project desired move direction into drone's local frame
+            Vector3 localDir = transform.InverseTransformDirection(desiredDir);
+            pitch = Mathf.Clamp(localDir.z * driveFactor, -1f, 1f);
+            roll = Mathf.Clamp(localDir.x * driveFactor, -1f, 1f);
+        }
+
+        // 4. Altitude Throttle Control
+        float altDelta = formationTargetPos.y - myPos.y;
+        float throttle = 0f;
+        if (Mathf.Abs(altDelta) > 0.08f)
+        {
+            throttle = Mathf.Clamp(altDelta / 1.5f, -1f, 1f);
+        }
+
+        // 5. Active Ground Clearance Protection: continuously respect minGroundClearance while approaching & stabilizing
+        if (minGroundClearance > 0.05f)
+        {
+            Vector3 rayOrigin = myPos + Vector3.up * 0.5f;
+            if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit groundHit, minGroundClearance + 3.0f, groundCheckLayers, QueryTriggerInteraction.Ignore))
+            {
+                if (groundHit.collider != null &&
+                    groundHit.collider.GetComponentInParent<FlightControlSystem>() == null &&
+                    groundHit.collider.GetComponentInParent<DroneNPCFollowTarget>() == null)
+                {
+                    float currentClearance = myPos.y - groundHit.point.y;
+                    if (currentClearance < minGroundClearance)
+                    {
+                        float clearanceDeficit = minGroundClearance - currentClearance;
+                        float climbUrgency = Mathf.Clamp01(0.6f + (clearanceDeficit / minGroundClearance) * 0.4f);
+                        throttle = Mathf.Max(throttle, climbUrgency);
+                    }
+                }
+            }
+        }
+
+        // 6. Heading / Yaw Alignment to formation orientation
+        float yaw = 0f;
+        if (yawError > formationRotTolerance)
+        {
+            // Responsive yaw: progressive proportional control with minimum threshold
+            float normalizedYaw = Mathf.Clamp(yawAngle / 30.0f, -1f, 1f);
+            yaw = Mathf.Sign(yawAngle) * Mathf.Max(Mathf.Abs(normalizedYaw) * formationAlignStrength, 0.2f);
+            yaw = Mathf.Clamp(yaw, -1f, 1f);
+        }
+
+        // 7. Feed commands to FlightControlSystem
+        if (_droneInputs != null)
+        {
+            _droneInputs.SetAIInputs(pitch, roll, yaw, throttle);
+        }
+    }
+
+    /// <summary>
+    /// Activates dedicated final formation guidance with exact target position, heading, arrival tolerances, and ground clearance.
+    /// </summary>
+    public void EnterFormationMode(
+        Vector3 targetPos,
+        Vector3 targetHeading,
+        float speed,
+        float decelDist,
+        float posTolerance,
+        float rotTolerance,
+        float alignStrength,
+        float minClearance = 2.0f,
+        LayerMask? groundLayers = null)
+    {
+        isFormationMode = true;
+        formationTargetPos = targetPos;
+        formationTargetHeading = targetHeading;
+        moveSpeed = speed;
+        formationDecelDist = decelDist;
+        formationPosTolerance = posTolerance;
+        formationRotTolerance = rotTolerance;
+        formationAlignStrength = alignStrength;
+        minGroundClearance = minClearance;
+        if (groundLayers.HasValue) groundCheckLayers = groundLayers.Value;
+        isFormationComplete = false;
+        _isAvoiding = false;
+        _avoidCommitTimer = 0f;
+        _currentMoveDir = Vector3.zero;
+    }
+
+    /// <summary>
+    /// Updates live formation target position and heading while remaining in formation mode.
+    /// </summary>
+    public void UpdateFormationTarget(Vector3 targetPos, Vector3 targetHeading)
+    {
+        formationTargetPos = targetPos;
+        formationTargetHeading = targetHeading;
+    }
+
+    /// <summary>
+    /// Updates live formation parameters during runtime tuning.
+    /// </summary>
+    public void UpdateFormationParameters(
+        float speed,
+        float decelDist,
+        float posTolerance,
+        float rotTolerance,
+        float alignStrength,
+        float minClearance = 2.0f,
+        LayerMask? groundLayers = null)
+    {
+        moveSpeed = speed;
+        formationDecelDist = decelDist;
+        formationPosTolerance = posTolerance;
+        formationRotTolerance = rotTolerance;
+        formationAlignStrength = alignStrength;
+        minGroundClearance = minClearance;
+        if (groundLayers.HasValue) groundCheckLayers = groundLayers.Value;
+    }
+
+    /// <summary>
+    /// Exits formation mode and returns to standard waypoint navigation.
+    /// </summary>
+    public void ExitFormationMode()
+    {
+        isFormationMode = false;
+        isFormationComplete = false;
     }
 
     /// <summary>
@@ -416,6 +640,8 @@ public class DroneNPCFollowTarget : MonoBehaviour
     public void StopFollowing()
     {
         isTargetLocked = false;
+        isFormationMode = false;
+        isFormationComplete = false;
         _currentMoveDir = Vector3.zero;
         _committedAvoidDir = Vector3.zero;
         _avoidCommitTimer = 0f;

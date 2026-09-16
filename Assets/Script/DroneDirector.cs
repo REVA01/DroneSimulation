@@ -292,6 +292,9 @@ public class DroneBrain : MonoBehaviour
         if (director == null || member == null || member.followTarget == null || member.tacticalWaypoint == null)
             return;
 
+        if (currentState == DroneAIState.PostCombat)
+            return;
+
         if (personality == null)
         {
             GeneratePersonality();
@@ -844,12 +847,81 @@ public class DroneDirector : MonoBehaviour
     public Vector2 retreatDurationRange = new Vector2(2.0f, 3.2f);
 
     // =========================================================================
-    // 10. DEBUG
+    // 10. FINAL FORMATION
+    // =========================================================================
+    [Header("Final Formation")]
+    [Tooltip("Whether to automatically select Parallel for even counts and V-Formation for odd counts.")]
+    public bool autoSelectFormationByCount = true;
+
+    [Tooltip("Currently active final formation type (auto-selected by drone count or set manually).")]
+    public FinalFormationType finalFormationType = FinalFormationType.VFormation;
+
+    [Tooltip("Spacing between adjacent drone slots in the final formation (meters). Used for parallel spacing and baseline V spacing.")]
+    public float formationSpacing = 4.0f;
+
+    [Tooltip("Full opening angle of the V formation in degrees (e.g. 60° to 90°).")]
+    [Range(30f, 150f)]
+    public float vAngle = 70.0f;
+
+    [Tooltip("Longitudinal/forward spacing between successive wing rows in the V formation (meters).")]
+    public float vForwardSpacing = 2.5f;
+
+    [Tooltip("Lateral/side spacing between successive wing drones in the V formation (meters).")]
+    public float vSideSpacing = 3.0f;
+
+    [Tooltip("Symmetrical heading deflection angle for wing drones relative to formation forward (degrees). Set to 0 for all drones facing straight forward.")]
+    [Range(-30f, 30f)]
+    public float wingHeadingAngle = 0.0f;
+
+    [Tooltip("Target altitude of the final formation above the ground/target (meters).")]
+    public float formationHeight = 3.0f;
+
+    [Tooltip("Yaw rotation angle offset (degrees) for the final formation orientation.")]
+    [Range(-180f, 180f)]
+    public float formationRotation = 0f;
+
+    [Tooltip("Strict minimum safe ground clearance in meters. Formation slots and drones will never be placed below this altitude above terrain.")]
+    public float minGroundClearance = 2.0f;
+
+    [Tooltip("LayerMask used to check ground and terrain under formation slots and drones.")]
+    public LayerMask groundCheckLayers = ~0;
+
+    [Tooltip("Maximum allowed distance from assigned slot to consider position complete (meters).")]
+    [Range(0.1f, 1.0f)]
+    public float positionTolerance = 0.35f;
+
+    [Tooltip("Maximum allowed heading/yaw error (degrees) to consider rotation complete.")]
+    [Range(1.0f, 15.0f)]
+    public float rotationTolerance = 4.0f;
+
+    [Tooltip("Cruise flight speed when transitioning into the final formation (m/s).")]
+    [Range(3.0f, 15.0f)]
+    public float formationSpeed = 8.0f;
+
+    [Tooltip("Distance from slot at which the drone smoothly decelerates into its final position (meters).")]
+    [Range(1.0f, 6.0f)]
+    public float formationDecelerationDistance = 3.0f;
+
+    [Tooltip("Multiplier for yaw alignment responsiveness when snapping to the formation heading.")]
+    [Range(0.5f, 3.0f)]
+    public float finalAlignmentStrength = 1.6f;
+
+    [Tooltip("Safety timeout (seconds) for drones to travel to final slots before forcing stabilization.")]
+    public float formationTimeout = 12.0f;
+
+    [Tooltip("Hold duration (seconds) after all drones complete formation before mission completion.")]
+    public float cinematicHoldDuration = 4.0f;
+
+    public float minimumAltitude { get => minGroundClearance; set => minGroundClearance = value; }
+    public float formationBrakingDistance { get => formationDecelerationDistance; set => formationDecelerationDistance = value; }
+
+    // =========================================================================
+    // 11. DEBUG
     // =========================================================================
     [Header("Debug")]
     public CombatPhase currentPhase = CombatPhase.SearchAndSpread;
     public TacticalFormationProfile currentCombatFormation = TacticalFormationProfile.LeftRightFlank;
-    public FinalFormationType selectedFinalFormation = FinalFormationType.VFormation;
+    public FinalFormationType selectedFinalFormation { get => finalFormationType; set => finalFormationType = value; }
     public float phaseTimer = 0f;
     public List<DroneSquadMember> squad = new List<DroneSquadMember>();
 
@@ -881,12 +953,11 @@ public class DroneDirector : MonoBehaviour
     [HideInInspector] public float arrivalSlowdownDistance { get => brakingDistance; set => brakingDistance = value; }
     [HideInInspector] public float minCombatSpeed = 3.5f;
     [HideInInspector] public TacticalAttackPattern currentAttackPattern = TacticalAttackPattern.ConvergingPincer;
-    [HideInInspector] public float victoryFormationSpacing = 4.2f;
-    [HideInInspector] public float victoryFormationHeight = 2.5f;
-    [HideInInspector] public float formationArrivalTolerance = 0.35f;
+    [HideInInspector] public float victoryFormationSpacing { get => formationSpacing; set => formationSpacing = value; }
+    [HideInInspector] public float victoryFormationHeight { get => formationHeight; set => formationHeight = value; }
+    [HideInInspector] public float formationArrivalTolerance { get => positionTolerance; set => positionTolerance = value; }
     [HideInInspector] public float formationSyncTimeTolerance = 0.5f;
-    [HideInInspector] public float cinematicHoldDuration = 4.0f;
-    [HideInInspector] public float victoryTravelTimeout = 2.0f;
+    [HideInInspector] public float victoryTravelTimeout { get => formationTimeout; set => formationTimeout = value; }
     [HideInInspector] public float minTravelSpeed = 4.5f;
     [HideInInspector] public float maxTravelSpeed = 9.5f;
     [HideInInspector] public bool isMissionComplete = false;
@@ -1074,6 +1145,7 @@ public class DroneDirector : MonoBehaviour
             brain = brain,
             role = assignedRole,
             droneIndex = index,
+            assignedFormationSlotIndex = index,
             hasArrivedAtFinalSlot = false,
             arrivalTimestamp = 0f,
             initialized = false
@@ -1083,6 +1155,29 @@ public class DroneDirector : MonoBehaviour
         squad.Add(member);
 
         ApplyDirectorSettingsToDrone(member);
+
+        if (targetEliminated || currentPhase == CombatPhase.PostCombatTraveling || currentPhase == CombatPhase.PostCombatStabilizing)
+        {
+            if (brain != null) brain.currentState = DroneAIState.PostCombat;
+
+            GetFinalFormationSlot(index, out Vector3 slotPos, out Vector3 slotHeading);
+            if (waypointObj != null) waypointObj.transform.position = slotPos;
+            if (followTarget != null)
+            {
+                followTarget.EnterFormationMode(
+                    slotPos,
+                    slotHeading,
+                    formationSpeed,
+                    formationDecelerationDistance,
+                    positionTolerance,
+                    rotationTolerance,
+                    finalAlignmentStrength,
+                    minGroundClearance,
+                    groundCheckLayers
+                );
+            }
+            UpdateVictoryWaypoints();
+        }
 
         return member;
     }
@@ -1098,6 +1193,18 @@ public class DroneDirector : MonoBehaviour
         if (member.followTarget != null)
         {
             member.followTarget.SyncFromDirector(this);
+            if (member.followTarget.isFormationMode)
+            {
+                member.followTarget.UpdateFormationParameters(
+                    formationSpeed,
+                    formationDecelerationDistance,
+                    positionTolerance,
+                    rotationTolerance,
+                    finalAlignmentStrength,
+                    minGroundClearance,
+                    groundCheckLayers
+                );
+            }
         }
 
         // 2. Flight Control System (FCS) & Cascading PID Controllers
@@ -1140,6 +1247,11 @@ public class DroneDirector : MonoBehaviour
             {
                 ApplyDirectorSettingsToDrone(squad[i]);
             }
+        }
+
+        if (targetEliminated || currentPhase == CombatPhase.PostCombatTraveling || currentPhase == CombatPhase.PostCombatStabilizing)
+        {
+            UpdateVictoryWaypoints();
         }
     }
 
@@ -1188,7 +1300,37 @@ public class DroneDirector : MonoBehaviour
             hash = hash * 31 + rateKd.GetHashCode();
             hash = hash * 31 + yawRateKp.GetHashCode();
             hash = hash * 31 + altitudeKp.GetHashCode();
+            hash = hash * 31 + autoSelectFormationByCount.GetHashCode();
+            hash = hash * 31 + finalFormationType.GetHashCode();
+            hash = hash * 31 + formationSpacing.GetHashCode();
+            hash = hash * 31 + vAngle.GetHashCode();
+            hash = hash * 31 + vForwardSpacing.GetHashCode();
+            hash = hash * 31 + vSideSpacing.GetHashCode();
+            hash = hash * 31 + wingHeadingAngle.GetHashCode();
+            hash = hash * 31 + formationHeight.GetHashCode();
+            hash = hash * 31 + formationRotation.GetHashCode();
+            hash = hash * 31 + minGroundClearance.GetHashCode();
+            hash = hash * 31 + positionTolerance.GetHashCode();
+            hash = hash * 31 + rotationTolerance.GetHashCode();
+            hash = hash * 31 + formationSpeed.GetHashCode();
+            hash = hash * 31 + formationDecelerationDistance.GetHashCode();
+            hash = hash * 31 + finalAlignmentStrength.GetHashCode();
             return hash;
+        }
+    }
+
+    private void OnValidate()
+    {
+        if (vAngle > 0f && formationSpacing > 0f)
+        {
+            float halfAngleRad = (vAngle * 0.5f) * Mathf.Deg2Rad;
+            if (vSideSpacing <= 0.01f) vSideSpacing = formationSpacing * Mathf.Sin(halfAngleRad);
+            if (vForwardSpacing <= 0.01f) vForwardSpacing = formationSpacing * Mathf.Cos(halfAngleRad);
+        }
+
+        if (Application.isPlaying && squad != null && squad.Count > 0)
+        {
+            ApplyDirectorSettingsToSquad();
         }
     }
 
@@ -1204,14 +1346,6 @@ public class DroneDirector : MonoBehaviour
         if (currentHash != _lastSettingsHash)
         {
             _lastSettingsHash = currentHash;
-            ApplyDirectorSettingsToSquad();
-        }
-    }
-
-    private void OnValidate()
-    {
-        if (Application.isPlaying && squad != null && squad.Count > 0)
-        {
             ApplyDirectorSettingsToSquad();
         }
     }
@@ -1842,103 +1976,226 @@ public class DroneDirector : MonoBehaviour
         SetupVictorySequence();
     }
 
-    // Initializes post-combat formation slots and travel speeds.
+    /// <summary>
+    /// Context menu shortcut to trigger the final victory formation in Play Mode for easy verification.
+    /// </summary>
+    [ContextMenu("Trigger Final Formation")]
+    public void TriggerFinalFormation()
+    {
+        targetEliminated = true;
+        SetupVictorySequence();
+    }
+
+    /// <summary>
+    /// Returns the number of currently active, non-null squad drones.
+    /// </summary>
+    public int GetActiveSquadCount()
+    {
+        int count = 0;
+        for (int i = 0; i < squad.Count; i++)
+        {
+            if (squad[i] != null && squad[i].droneObject != null && squad[i].droneObject.activeInHierarchy)
+            {
+                count++;
+            }
+        }
+        return count > 0 ? count : squad.Count;
+    }
+
+    /// <summary>
+    /// Returns ParallelFormation for even drone counts and VFormation for odd drone counts.
+    /// </summary>
+    public FinalFormationType DetermineFormationTypeForCount(int count)
+    {
+        return (count % 2 == 0) ? FinalFormationType.ParallelFormation : FinalFormationType.VFormation;
+    }
+
+    // Selects final formation type based on odd or even active drone count.
+    private void SelectFinalFormation()
+    {
+        if (autoSelectFormationByCount)
+        {
+            finalFormationType = DetermineFormationTypeForCount(GetActiveSquadCount());
+        }
+    }
+
+    // Initializes post-combat formation slots, deterministic mappings, and arrival parameters.
     private void SetupVictorySequence()
     {
         SelectFinalFormation();
 
-        victoryForward = lastKnownTargetForward;
-        if (victoryForward.sqrMagnitude < 0.001f) victoryForward = Vector3.forward;
+        _activeAttackers.Clear();
+        for (int i = 0; i < squad.Count; i++)
+        {
+            if (squad[i] != null && squad[i].brain != null)
+            {
+                squad[i].brain.currentState = DroneAIState.PostCombat;
+            }
+        }
+
+        victoryForward = (lastKnownTargetForward.sqrMagnitude > 0.001f) ? lastKnownTargetForward : Vector3.forward;
         victoryForward.y = 0f;
         victoryForward.Normalize();
 
-        victoryCenter = lastKnownTargetPos + Vector3.up * victoryFormationHeight - victoryForward * 1.5f;
-        phaseTimer = victoryTravelTimeout;
+        Vector3 formationForward = Quaternion.AngleAxis(formationRotation, Vector3.up) * victoryForward;
+        formationForward.y = 0f;
+        formationForward.Normalize();
 
-        AssignOptimalFormationSlots();
+        victoryCenter = lastKnownTargetPos + Vector3.up * formationHeight - formationForward * 1.5f;
+        phaseTimer = formationTimeout;
+
+        int totalDrones = Mathf.Max(GetActiveSquadCount(), 1);
 
         for (int i = 0; i < squad.Count; i++)
         {
-            if (squad[i] != null)
+            DroneSquadMember member = squad[i];
+            if (member == null) continue;
+
+            // Deterministic slot mapping: drone index i always receives slot i
+            member.assignedFormationSlotIndex = i;
+            member.hasArrivedAtFinalSlot = false;
+            member.arrivalTimestamp = 0f;
+
+            GetFinalFormationSlot(i, totalDrones, out Vector3 slotPos, out Vector3 slotHeading);
+
+            if (member.tacticalWaypoint != null)
             {
-                squad[i].hasArrivedAtFinalSlot = false;
-                squad[i].arrivalTimestamp = 0f;
-                if (squad[i].followTarget != null)
-                {
-                    squad[i].followTarget.stopDistance = 0.15f;
-                }
+                member.tacticalWaypoint.position = slotPos;
+            }
+
+            if (member.followTarget != null)
+            {
+                member.followTarget.EnterFormationMode(
+                    slotPos,
+                    slotHeading,
+                    formationSpeed,
+                    formationDecelerationDistance,
+                    positionTolerance,
+                    rotationTolerance,
+                    finalAlignmentStrength,
+                    minGroundClearance,
+                    groundCheckLayers
+                );
             }
         }
 
         EnterPhase(CombatPhase.PostCombatTraveling);
     }
 
-    // Selects final formation type based on odd or even drone count.
-    private void SelectFinalFormation()
+    /// <summary>
+    /// Computes the deterministic world-space slot position and target heading for a squad member.
+    /// </summary>
+    public void GetFinalFormationSlot(int slotIndex, out Vector3 slotPosition, out Vector3 slotHeading)
     {
-        if (squad.Count % 2 == 0)
-        {
-            selectedFinalFormation = FinalFormationType.ParallelFormation;
-        }
-        else
-        {
-            selectedFinalFormation = FinalFormationType.VFormation;
-        }
+        GetFinalFormationSlot(slotIndex, Mathf.Max(GetActiveSquadCount(), 1), out slotPosition, out slotHeading);
     }
 
-    // Assigns drones to their closest victory formation slots.
-    private void AssignOptimalFormationSlots()
+    /// <summary>
+    /// Computes the deterministic world-space slot position and target heading based on squad count:
+    /// - Even count: Symmetrical Parallel line formation with equal spacing.
+    /// - Odd count: Centered V-shaped formation with lead drone at apex (slot 0) and symmetrical wings.
+    /// </summary>
+    public void GetFinalFormationSlot(int slotIndex, int totalDrones, out Vector3 slotPosition, out Vector3 slotHeading)
     {
-        if (squad.Count == 0) return;
+        FinalFormationType activeType = autoSelectFormationByCount
+            ? DetermineFormationTypeForCount(totalDrones)
+            : finalFormationType;
 
-        if (squad.Count == 2)
+        Vector3 baseForward = (victoryForward.sqrMagnitude > 0.001f) ? victoryForward : Vector3.forward;
+        baseForward.y = 0f;
+        baseForward.Normalize();
+
+        Vector3 formationForward = Quaternion.AngleAxis(formationRotation, Vector3.up) * baseForward;
+        formationForward.y = 0f;
+        formationForward.Normalize();
+        Vector3 formationRight = Vector3.Cross(Vector3.up, formationForward).normalized;
+
+        slotHeading = formationForward;
+        Vector3 center = victoryCenter;
+        Vector3 slotOffset = Vector3.zero;
+
+        switch (activeType)
         {
-            Vector3 pos0 = squad[0].droneObject != null ? squad[0].droneObject.transform.position : transform.position;
-            Vector3 pos1 = squad[1].droneObject != null ? squad[1].droneObject.transform.position : transform.position;
+            case FinalFormationType.ParallelFormation:
+                // Even count: Symmetrical line abreast perpendicular to formationForward
+                float halfSpan = (totalDrones - 1) * 0.5f;
+                float lateralOffset = (slotIndex - halfSpan) * formationSpacing;
+                slotOffset = formationRight * lateralOffset;
+                slotHeading = formationForward;
+                break;
 
-            Vector3 slot0 = CalculateFinalFormationSlot(0, victoryCenter, victoryForward);
-            Vector3 slot1 = CalculateFinalFormationSlot(1, victoryCenter, victoryForward);
-
-            float costDirect = Vector3.Distance(pos0, slot0) + Vector3.Distance(pos1, slot1);
-            float costSwapped = Vector3.Distance(pos0, slot1) + Vector3.Distance(pos1, slot0);
-
-            if (costSwapped < costDirect)
-            {
-                squad[0].assignedFormationSlotIndex = 1;
-                squad[1].assignedFormationSlotIndex = 0;
-            }
-            else
-            {
-                squad[0].assignedFormationSlotIndex = 0;
-                squad[1].assignedFormationSlotIndex = 1;
-            }
-        }
-        else
-        {
-            List<int> availableSlots = new List<int>();
-            for (int j = 0; j < squad.Count; j++) availableSlots.Add(j);
-
-            for (int i = 0; i < squad.Count; i++)
-            {
-                Vector3 dronePos = squad[i].droneObject != null ? squad[i].droneObject.transform.position : transform.position;
-                int bestSlot = availableSlots[0];
-                float bestDist = float.MaxValue;
-
-                for (int k = 0; k < availableSlots.Count; k++)
+            case FinalFormationType.VFormation:
+            default:
+                // Odd count: Symmetrical V formation with slot 0 as apex leader
+                if (totalDrones == 1 || slotIndex == 0)
                 {
-                    int slotIdx = availableSlots[k];
-                    float d = Vector3.Distance(dronePos, CalculateFinalFormationSlot(slotIdx, victoryCenter, victoryForward));
-                    if (d < bestDist)
+                    slotOffset = Vector3.zero;
+                    slotHeading = formationForward;
+                }
+                else
+                {
+                    // Alternating symmetrical wings:
+                    // Odd indices (1, 3, 5...) form the Left Wing (side = -1)
+                    // Even indices (2, 4, 6...) form the Right Wing (side = +1)
+                    int wingPair = (slotIndex + 1) / 2;
+                    float side = (slotIndex % 2 == 1) ? -1f : 1f;
+
+                    float latStep = vSideSpacing;
+                    float fwdStep = vForwardSpacing;
+                    if (latStep <= 0.01f || fwdStep <= 0.01f)
                     {
-                        bestDist = d;
-                        bestSlot = slotIdx;
+                        float halfAngleRad = (vAngle * 0.5f) * Mathf.Deg2Rad;
+                        latStep = formationSpacing * Mathf.Sin(halfAngleRad);
+                        fwdStep = formationSpacing * Mathf.Cos(halfAngleRad);
+                    }
+
+                    slotOffset = formationRight * (side * wingPair * latStep) - formationForward * (wingPair * fwdStep);
+
+                    // Symmetrical wing heading deflection if wingHeadingAngle != 0
+                    if (Mathf.Abs(wingHeadingAngle) > 0.01f)
+                    {
+                        slotHeading = Quaternion.AngleAxis(side * wingHeadingAngle, Vector3.up) * formationForward;
+                    }
+                    else
+                    {
+                        slotHeading = formationForward;
                     }
                 }
+                break;
+        }
 
-                squad[i].assignedFormationSlotIndex = bestSlot;
-                availableSlots.Remove(bestSlot);
+        Vector3 rawSlot = center + slotOffset;
+
+        // Strict minimum safe ground clearance: ensures slot can never be below minGroundClearance above terrain
+        if (minGroundClearance > 0.01f)
+        {
+            Vector3 groundRayStart = new Vector3(rawSlot.x, rawSlot.y + 50f, rawSlot.z);
+            if (Physics.Raycast(groundRayStart, Vector3.down, out RaycastHit groundHit, 100f, groundCheckLayers, QueryTriggerInteraction.Ignore))
+            {
+                if (groundHit.collider != null &&
+                    groundHit.collider.GetComponentInParent<FlightControlSystem>() == null &&
+                    groundHit.collider.GetComponentInParent<DroneNPCFollowTarget>() == null &&
+                    (target == null || groundHit.collider.transform.root != target.root))
+                {
+                    float minSafeY = groundHit.point.y + minGroundClearance;
+                    if (rawSlot.y < minSafeY)
+                    {
+                        rawSlot.y = minSafeY;
+                    }
+                }
             }
         }
+
+        slotPosition = ClampToNavigableSpace(center, rawSlot);
+    }
+
+    /// <summary>
+    /// Computes formation slot world position (legacy overload for backward compatibility).
+    /// </summary>
+    public Vector3 CalculateFinalFormationSlot(int slotIndex, Vector3 center, Vector3 forward)
+    {
+        GetFinalFormationSlot(slotIndex, out Vector3 slotPosition, out _);
+        return slotPosition;
     }
 
     // Computes the world position of a drone's assigned final formation slot.
@@ -1947,111 +2204,138 @@ public class DroneDirector : MonoBehaviour
         if (droneIndex < 0 || droneIndex >= squad.Count) return victoryCenter;
         int slotIdx = squad[droneIndex].assignedFormationSlotIndex;
         if (slotIdx < 0) slotIdx = droneIndex;
-        return CalculateFinalFormationSlot(slotIdx, victoryCenter, victoryForward);
+        GetFinalFormationSlot(slotIdx, out Vector3 slotPos, out _);
+        return slotPos;
     }
 
-    // Updates tactical waypoints to assigned victory formation positions.
+    // Updates tactical waypoints and follow targets to assigned victory formation positions and headings.
     private void UpdateVictoryWaypoints()
     {
-        for (int i = 0; i < squad.Count; i++)
+        int totalDrones = Mathf.Max(GetActiveSquadCount(), 1);
+        if (autoSelectFormationByCount)
         {
-            DroneSquadMember member = squad[i];
-            if (member == null || member.tacticalWaypoint == null) continue;
-
-            Vector3 slot = GetAssignedFormationSlot(i);
-            member.tacticalWaypoint.position = slot;
+            finalFormationType = DetermineFormationTypeForCount(totalDrones);
         }
-    }
 
-    // Computes formation slot offsets for V and Parallel victory formations.
-    public Vector3 CalculateFinalFormationSlot(int slotIndex, Vector3 center, Vector3 forward)
-    {
-        Vector3 right = Vector3.Cross(Vector3.up, forward).normalized;
-        if (right.sqrMagnitude < 0.001f) right = Vector3.right;
-        float s = victoryFormationSpacing;
-        int total = squad.Count;
+        Vector3 baseForward = (victoryForward.sqrMagnitude > 0.001f) ? victoryForward : Vector3.forward;
+        baseForward.y = 0f;
+        baseForward.Normalize();
+        Vector3 formationForward = Quaternion.AngleAxis(formationRotation, Vector3.up) * baseForward;
+        formationForward.y = 0f;
+        formationForward.Normalize();
 
-        Vector3 slotPos;
+        victoryCenter = lastKnownTargetPos + Vector3.up * formationHeight - formationForward * 1.5f;
 
-        switch (selectedFinalFormation)
+        // Check ground clearance across the entire formation footprint to preserve planar shape if terrain rises
+        if (minGroundClearance > 0.01f)
         {
-            case FinalFormationType.VFormation:
-                if (slotIndex == 0)
+            float maxRequiredElevation = victoryCenter.y;
+            Vector3 formationRight = Vector3.Cross(Vector3.up, formationForward).normalized;
+
+            for (int i = 0; i < squad.Count; i++)
+            {
+                Vector3 samplePos = victoryCenter;
+                if (finalFormationType == FinalFormationType.ParallelFormation)
                 {
-                    slotPos = center + forward * (s * 0.4f);
+                    float halfSpan = (totalDrones - 1) * 0.5f;
+                    samplePos += formationRight * ((i - halfSpan) * formationSpacing);
                 }
                 else
                 {
-                    int pairIndex = (slotIndex + 1) / 2;
-                    float side = (slotIndex % 2 == 1) ? -1f : 1f;
-                    slotPos = center - forward * (s * 0.3f * pairIndex) + right * (side * s * 0.45f * pairIndex);
+                    if (i > 0)
+                    {
+                        int wingPair = (i + 1) / 2;
+                        float side = (i % 2 == 1) ? -1f : 1f;
+                        float latStep = (vSideSpacing > 0.01f) ? vSideSpacing : formationSpacing * Mathf.Sin(vAngle * 0.5f * Mathf.Deg2Rad);
+                        float fwdStep = (vForwardSpacing > 0.01f) ? vForwardSpacing : formationSpacing * Mathf.Cos(vAngle * 0.5f * Mathf.Deg2Rad);
+                        samplePos += formationRight * (side * wingPair * latStep) - formationForward * (wingPair * fwdStep);
+                    }
                 }
-                break;
 
-            case FinalFormationType.ParallelFormation:
-            default:
-                float halfSpan = (total - 1) * 0.5f;
-                float offset = slotIndex - halfSpan;
-                slotPos = center + right * (offset * s * 0.5f);
-                break;
+                Vector3 rayStart = new Vector3(samplePos.x, victoryCenter.y + 50f, samplePos.z);
+                if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, 100f, groundCheckLayers, QueryTriggerInteraction.Ignore))
+                {
+                    if (hit.collider != null &&
+                        hit.collider.GetComponentInParent<FlightControlSystem>() == null &&
+                        hit.collider.GetComponentInParent<DroneNPCFollowTarget>() == null &&
+                        (target == null || hit.collider.transform.root != target.root))
+                    {
+                        float safeY = hit.point.y + minGroundClearance;
+                        if (safeY > maxRequiredElevation)
+                        {
+                            maxRequiredElevation = safeY;
+                        }
+                    }
+                }
+            }
+
+            if (maxRequiredElevation > victoryCenter.y)
+            {
+                victoryCenter.y = maxRequiredElevation;
+            }
         }
-
-        return ClampToNavigableSpace(center, slotPos);
-    }
-
-    // Synchronizes drone speeds so all drones reach victory slots together.
-    private void UpdateSynchronizedTravelSpeeds()
-    {
-        if (squad.Count == 0) return;
-
-        float targetDuration = 1.25f;
 
         for (int i = 0; i < squad.Count; i++)
         {
             DroneSquadMember member = squad[i];
-            if (member == null || member.followTarget == null || member.droneObject == null) continue;
+            if (member == null) continue;
 
-            Vector3 slot = GetAssignedFormationSlot(i);
-            float dist = Vector3.Distance(member.droneObject.transform.position, slot);
+            GetFinalFormationSlot(i, totalDrones, out Vector3 slotPos, out Vector3 slotHeading);
 
-            if (member.hasArrivedAtFinalSlot || dist <= formationArrivalTolerance)
+            if (member.tacticalWaypoint != null)
             {
-                member.hasArrivedAtFinalSlot = true;
-                member.followTarget.moveSpeed = 0f;
-                if (member.brain != null) member.brain.currentFlightSpeed = 0f;
-                continue;
+                member.tacticalWaypoint.position = slotPos;
             }
 
-            float requiredSpeed = dist / targetDuration;
-            float assignedSpeed = Mathf.Clamp(requiredSpeed, minTravelSpeed, maxTravelSpeed);
-
-            if (dist < 0.6f)
+            if (member.followTarget != null)
             {
-                assignedSpeed = Mathf.Lerp(2.5f, assignedSpeed, dist / 0.6f);
+                member.followTarget.UpdateFormationTarget(slotPos, slotHeading);
+                member.followTarget.UpdateFormationParameters(
+                    formationSpeed,
+                    formationDecelerationDistance,
+                    positionTolerance,
+                    rotationTolerance,
+                    finalAlignmentStrength,
+                    minGroundClearance,
+                    groundCheckLayers
+                );
             }
-
-            member.followTarget.moveSpeed = assignedSpeed;
-            if (member.brain != null) member.brain.currentFlightSpeed = assignedSpeed;
         }
     }
 
-    // Checks if all drones have arrived at their victory slots.
+    // Synchronizes drone formation completion status.
+    private void UpdateSynchronizedTravelSpeeds()
+    {
+        for (int i = 0; i < squad.Count; i++)
+        {
+            DroneSquadMember member = squad[i];
+            if (member == null || member.droneObject == null) continue;
+
+            if (member.followTarget != null && member.followTarget.isFormationComplete)
+            {
+                if (!member.hasArrivedAtFinalSlot)
+                {
+                    member.hasArrivedAtFinalSlot = true;
+                    member.arrivalTimestamp = Time.time;
+                }
+            }
+        }
+    }
+
+    // Checks if all drones have reached and stabilized in their final formation slots.
     private void CheckSynchronizedArrival()
     {
         if (squad.Count == 0) return;
 
-        bool allArrived = true;
+        bool allComplete = true;
 
         for (int i = 0; i < squad.Count; i++)
         {
             DroneSquadMember member = squad[i];
-            if (member == null || member.droneObject == null)
-                continue;
+            if (member == null || member.droneObject == null) continue;
 
-            Vector3 slot = GetAssignedFormationSlot(i);
-            float distToSlot = Vector3.Distance(member.droneObject.transform.position, slot);
-
-            if (distToSlot <= formationArrivalTolerance)
+            bool isComplete = (member.followTarget != null && member.followTarget.isFormationComplete);
+            if (isComplete)
             {
                 if (!member.hasArrivedAtFinalSlot)
                 {
@@ -2061,59 +2345,21 @@ public class DroneDirector : MonoBehaviour
             }
             else
             {
-                allArrived = false;
+                allComplete = false;
             }
         }
 
-        if (allArrived || phaseTimer <= 0f)
+        if (allComplete || phaseTimer <= 0f)
         {
             EnterPhase(CombatPhase.PostCombatStabilizing);
+            Debug.Log($"<color=green>[DroneDirector] Final formation settled! Active squad: {squad.Count} in {finalFormationType}</color>");
         }
     }
 
-    // Holds drones in stable hover at their final formation slots.
+    // Holds drones in stable hover at their final formation slots while maintaining active formation orientation.
     private void HoldVictoryStabilization()
     {
-        for (int i = 0; i < squad.Count; i++)
-        {
-            DroneSquadMember member = squad[i];
-            if (member == null || member.droneObject == null) continue;
-
-            Vector3 slot = GetAssignedFormationSlot(i);
-            if (member.tacticalWaypoint != null)
-            {
-                member.tacticalWaypoint.position = slot;
-            }
-
-            if (member.followTarget != null)
-            {
-                member.followTarget.moveSpeed = cruiseSpeed * 0.5f;
-                member.followTarget.stopDistance = 0.5f;
-            }
-
-            if (member.brain != null)
-            {
-                member.brain.currentFlightSpeed = cruiseSpeed * 0.5f;
-            }
-
-            // Once arrived close to formation slot, hold stable hover
-            float distToSlot = Vector3.Distance(member.droneObject.transform.position, slot);
-            if (distToSlot <= 0.8f)
-            {
-                DroneInputs inputs = member.droneObject.GetComponent<DroneInputs>();
-                if (inputs != null)
-                {
-                    inputs.SetAIInputs(0f, 0f, 0f, 0f);
-                }
-
-                Rigidbody rb = member.droneObject.GetComponent<Rigidbody>();
-                if (rb != null)
-                {
-                    rb.linearVelocity = Vector3.MoveTowards(rb.linearVelocity, Vector3.zero, Time.deltaTime * 6f);
-                    rb.angularVelocity = Vector3.MoveTowards(rb.angularVelocity, Vector3.zero, Time.deltaTime * 6f);
-                }
-            }
-        }
+        UpdateVictoryWaypoints();
     }
 
     // Selects a follow formation based on drone count.
@@ -2682,8 +2928,13 @@ public class DroneDirector : MonoBehaviour
             if (squad[i] != null)
             {
                 squad[i].droneIndex = i;
-                squad[i].assignedFormationSlotIndex = -1;
+                squad[i].assignedFormationSlotIndex = i;
             }
+        }
+
+        if (targetEliminated || currentPhase == CombatPhase.PostCombatTraveling || currentPhase == CombatPhase.PostCombatStabilizing)
+        {
+            UpdateVictoryWaypoints();
         }
 
         // Re-wire obstacle avoidance for surviving drones
