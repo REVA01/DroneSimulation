@@ -55,6 +55,49 @@ public enum TacticalFormationProfile
     DiamondPerimeter
 }
 
+public enum DroneAIArchetype
+{
+    AggressiveChaser,  // Closes in quickly, dives at high speed, short cooldown, tight combat distance
+    RangedHarasser,    // Maintains stand-off distance (8-12m), fires ranged bursts or darts in for quick probes
+    CirclerOrbiter,    // Circles/orbits target at varied radius/altitude, providing constant distraction
+    Flanker,           // Positions at target's sides/rear (70° - 150°), attacks from unexpected angles
+    Opportunist        // Repositions between high/low vantage points, strikes when target is distracted
+}
+
+public enum DroneAIState
+{
+    FollowFormation,   // Target is beyond engagement distance
+    Approaching,       // Closing in towards individual combat distance
+    Circling,          // Orbiting target at individual radius/speed
+    Flanking,          // Maneuvering around target flank/rear
+    Repositioning,     // Changing vantage position / elevation
+    Attacking,         // Actively closing in / diving to execute strike
+    Retreating,        // Disengaging to safe distance after attack/damage
+    PostCombat         // Target eliminated, victory sequence
+}
+
+[System.Serializable]
+public class DronePersonalityProfile
+{
+    public DroneAIArchetype archetype;
+    [Range(0f, 1f)] public float aggression = 0.5f;
+    public float preferredDistance = 7f;
+    public float strikeDistance = 2.5f;
+    public float approachSpeed = 6f;
+    public float attackSpeed = 10f;
+    public float decisionInterval = 0.5f;
+    public float reactionTime = 0.2f;
+    public float attackCooldown = 4.5f;
+    public float orbitRadius = 8f;
+    public float orbitSpeed = 35f; // signed: positive = CW, negative = CCW
+    public float preferredAltitude = 2.5f;
+    public float flankAngleOffset = 90f;
+    public float retreatDistance = 10f;
+    public float retreatDuration = 2.5f;
+    public bool canRangedAttack = false;
+    public float rangedAttackDistance = 14f;
+}
+
 public class DroneBrain : MonoBehaviour
 {
     [Header("Brain Status")]
@@ -66,14 +109,490 @@ public class DroneBrain : MonoBehaviour
     public bool isLaggingBehind;
     public bool isConnectedWithSquad = true;
 
+    [Header("Individual AI Behavior (Runtime Generated)")]
+    public DronePersonalityProfile personality;
+    public DroneAIState currentState = DroneAIState.Approaching;
+    public bool isAttacking = false;
+    public float currentAttackCooldown = 0f;
+    public float retreatTimer = 0f;
+
+    private float _decisionTimer = 0f;
+    private float _currentOrbitAngleDeg = 0f;
+    private float _swayPhase = 0f;
+    private float _attackTimeoutTimer = 0f;
+    private LineRenderer _tracerLine = null;
+    private float _tracerTimer = 0f;
+
     // Initializes references to the director and squad member.
     public void Initialize(DroneDirector directorInstance, DroneDirector.DroneSquadMember squadMember)
     {
         director = directorInstance;
         member = squadMember;
+
+        if (director != null)
+        {
+            GeneratePersonality();
+        }
+
+        // Stagger initial timers so drones don't think on the exact same frame
+        _decisionTimer = UnityEngine.Random.Range(0.05f, personality != null ? personality.decisionInterval : 0.5f);
+        _currentOrbitAngleDeg = UnityEngine.Random.Range(0f, 360f);
+        _swayPhase = UnityEngine.Random.Range(0f, 100f);
+
+        if (personality != null && member != null && member.droneObject != null)
+        {
+            member.droneObject.name = $"TacticalDrone_{member.droneIndex + 1}_{personality.archetype}";
+        }
     }
 
-    // Regulates adaptive flight speed based on distance and wingman positions.
+    /// <summary>
+    /// Generates a completely unique personality profile with controlled randomness based on director settings.
+    /// </summary>
+    public void GeneratePersonality()
+    {
+        if (director == null) return;
+
+        personality = new DronePersonalityProfile();
+
+        // 1. Pick Archetype based on director weights
+        int totalWeight = director.weightAggressiveChaser + director.weightRangedHarasser +
+                          director.weightCirclerOrbiter + director.weightFlanker + director.weightOpportunist;
+        if (totalWeight <= 0) totalWeight = 100;
+
+        int roll = UnityEngine.Random.Range(0, totalWeight);
+        if (roll < director.weightAggressiveChaser)
+        {
+            personality.archetype = DroneAIArchetype.AggressiveChaser;
+        }
+        else if (roll < director.weightAggressiveChaser + director.weightRangedHarasser)
+        {
+            personality.archetype = DroneAIArchetype.RangedHarasser;
+        }
+        else if (roll < director.weightAggressiveChaser + director.weightRangedHarasser + director.weightCirclerOrbiter)
+        {
+            personality.archetype = DroneAIArchetype.CirclerOrbiter;
+        }
+        else if (roll < director.weightAggressiveChaser + director.weightRangedHarasser + director.weightCirclerOrbiter + director.weightFlanker)
+        {
+            personality.archetype = DroneAIArchetype.Flanker;
+        }
+        else
+        {
+            personality.archetype = DroneAIArchetype.Opportunist;
+        }
+
+        // 2. Sample randomized attributes within Inspector ranges
+        float minAgg = Mathf.Min(director.aggressionRange.x, director.aggressionRange.y);
+        float maxAgg = Mathf.Max(director.aggressionRange.x, director.aggressionRange.y);
+        personality.aggression = UnityEngine.Random.Range(minAgg, maxAgg);
+
+        float minPrefDist = Mathf.Min(director.preferredDistanceRange.x, director.preferredDistanceRange.y);
+        float maxPrefDist = Mathf.Max(director.preferredDistanceRange.x, director.preferredDistanceRange.y);
+        personality.preferredDistance = UnityEngine.Random.Range(minPrefDist, maxPrefDist);
+
+        float minStrike = Mathf.Min(director.strikeDistanceRange.x, director.strikeDistanceRange.y);
+        float maxStrike = Mathf.Max(director.strikeDistanceRange.x, director.strikeDistanceRange.y);
+        personality.strikeDistance = UnityEngine.Random.Range(minStrike, maxStrike);
+
+        float minApp = Mathf.Min(director.approachSpeedRange.x, director.approachSpeedRange.y);
+        float maxApp = Mathf.Max(director.approachSpeedRange.x, director.approachSpeedRange.y);
+        personality.approachSpeed = UnityEngine.Random.Range(minApp, maxApp);
+
+        float minAtk = Mathf.Min(director.attackSpeedRange.x, director.attackSpeedRange.y);
+        float maxAtk = Mathf.Max(director.attackSpeedRange.x, director.attackSpeedRange.y);
+        personality.attackSpeed = UnityEngine.Random.Range(minAtk, maxAtk);
+
+        float minDec = Mathf.Min(director.decisionIntervalRange.x, director.decisionIntervalRange.y);
+        float maxDec = Mathf.Max(director.decisionIntervalRange.x, director.decisionIntervalRange.y);
+        personality.decisionInterval = UnityEngine.Random.Range(minDec, maxDec);
+
+        float minReact = Mathf.Min(director.reactionTimeRange.x, director.reactionTimeRange.y);
+        float maxReact = Mathf.Max(director.reactionTimeRange.x, director.reactionTimeRange.y);
+        personality.reactionTime = UnityEngine.Random.Range(minReact, maxReact);
+
+        float minCd = Mathf.Min(director.attackCooldownRange.x, director.attackCooldownRange.y);
+        float maxCd = Mathf.Max(director.attackCooldownRange.x, director.attackCooldownRange.y);
+        personality.attackCooldown = UnityEngine.Random.Range(minCd, maxCd);
+
+        float minOrbR = Mathf.Min(director.orbitRadiusRange.x, director.orbitRadiusRange.y);
+        float maxOrbR = Mathf.Max(director.orbitRadiusRange.x, director.orbitRadiusRange.y);
+        personality.orbitRadius = UnityEngine.Random.Range(minOrbR, maxOrbR);
+
+        float minOrbS = Mathf.Min(director.orbitSpeedRange.x, director.orbitSpeedRange.y);
+        float maxOrbS = Mathf.Max(director.orbitSpeedRange.x, director.orbitSpeedRange.y);
+        float orbitDir = (UnityEngine.Random.value > 0.5f) ? 1f : -1f;
+        personality.orbitSpeed = UnityEngine.Random.Range(minOrbS, maxOrbS) * orbitDir;
+
+        float minAlt = Mathf.Min(director.altitudeRange.x, director.altitudeRange.y);
+        float maxAlt = Mathf.Max(director.altitudeRange.x, director.altitudeRange.y);
+        personality.preferredAltitude = UnityEngine.Random.Range(minAlt, maxAlt);
+
+        float minRet = Mathf.Min(director.retreatDurationRange.x, director.retreatDurationRange.y);
+        float maxRet = Mathf.Max(director.retreatDurationRange.x, director.retreatDurationRange.y);
+        personality.retreatDuration = UnityEngine.Random.Range(minRet, maxRet);
+        personality.retreatDistance = personality.preferredDistance + UnityEngine.Random.Range(2.5f, 4.5f);
+
+        personality.flankAngleOffset = (UnityEngine.Random.value > 0.5f ? 1f : -1f) * UnityEngine.Random.Range(70f, 135f);
+
+        // 3. Archetype-specific bias & initial state
+        switch (personality.archetype)
+        {
+            case DroneAIArchetype.AggressiveChaser:
+                personality.aggression = Mathf.Clamp01(personality.aggression + 0.2f);
+                personality.preferredDistance = Mathf.Max(3.5f, personality.preferredDistance - 2f);
+                personality.attackCooldown = Mathf.Max(2.5f, personality.attackCooldown - 1.2f);
+                personality.attackSpeed = Mathf.Max(personality.attackSpeed, maxAtk * 0.95f);
+                currentState = DroneAIState.Approaching;
+                break;
+
+            case DroneAIArchetype.RangedHarasser:
+                personality.canRangedAttack = director.allowRangedVisuals;
+                personality.rangedAttackDistance = director.rangedAttackRange;
+                personality.preferredDistance = Mathf.Max(8.0f, personality.preferredDistance + 1.5f);
+                personality.aggression = Mathf.Clamp(personality.aggression * 0.75f, 0.2f, 0.7f);
+                currentState = DroneAIState.Approaching;
+                break;
+
+            case DroneAIArchetype.CirclerOrbiter:
+                personality.preferredDistance = personality.orbitRadius;
+                currentState = DroneAIState.Circling;
+                break;
+
+            case DroneAIArchetype.Flanker:
+                personality.preferredDistance = Mathf.Clamp(personality.preferredDistance, 6.5f, 10f);
+                currentState = DroneAIState.Flanking;
+                break;
+
+            case DroneAIArchetype.Opportunist:
+                personality.preferredAltitude = UnityEngine.Random.value > 0.5f ? maxAlt + 1.2f : minAlt;
+                currentState = DroneAIState.Repositioning;
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Executes the autonomous individual AI per-frame tick: updates timers, makes tactical decisions,
+    /// tracks attacks, calculates dynamic 3D waypoints, and smoothly adjusts speed.
+    /// </summary>
+    public void TickAutonomousAI(Transform target, Vector3 targetCenter, Vector3 forwardDir, float dt)
+    {
+        if (director == null || member == null || member.followTarget == null || member.tacticalWaypoint == null)
+            return;
+
+        if (personality == null)
+        {
+            GeneratePersonality();
+        }
+
+        Vector3 myPos = transform.position;
+        distanceToWaypoint = Vector3.Distance(myPos, member.tacticalWaypoint.position);
+        distanceToCentroid = Vector3.Distance(myPos, director.GetSquadCentroid());
+        isConnectedWithSquad = distanceToCentroid < 30.0f;
+        isLaggingBehind = distanceToWaypoint > 3.5f;
+
+        // Update internal cooldowns
+        if (currentAttackCooldown > 0f) currentAttackCooldown -= dt;
+        if (_decisionTimer > 0f) _decisionTimer -= dt;
+
+        if (_tracerTimer > 0f)
+        {
+            _tracerTimer -= dt;
+            if (_tracerTimer <= 0f && _tracerLine != null)
+            {
+                _tracerLine.enabled = false;
+            }
+        }
+
+        // 1. Tactical decision evaluation
+        if (_decisionTimer <= 0f)
+        {
+            _decisionTimer = personality.decisionInterval + UnityEngine.Random.Range(-0.08f, 0.08f);
+            EvaluateTacticalDecision(target);
+        }
+
+        // 2. Attack tracking & proximity check
+        if (currentState == DroneAIState.Attacking)
+        {
+            isAttacking = true;
+            _attackTimeoutTimer += dt;
+
+            float distToTarget = Vector3.Distance(myPos, targetCenter);
+            if (distToTarget <= personality.strikeDistance)
+            {
+                director.ExecuteDroneStrike(this, target);
+                return;
+            }
+
+            // Safety timeout: if blocked or taking too long, abort attack and disengage
+            if (_attackTimeoutTimer > 6.0f)
+            {
+                director.ReleaseAttackToken(this);
+                OnStrikeDelivered();
+                return;
+            }
+        }
+        else
+        {
+            isAttacking = false;
+            _attackTimeoutTimer = 0f;
+        }
+
+        // 3. Retreat timer handling
+        if (currentState == DroneAIState.Retreating)
+        {
+            retreatTimer -= dt;
+            if (retreatTimer <= 0f)
+            {
+                switch (personality.archetype)
+                {
+                    case DroneAIArchetype.CirclerOrbiter:
+                        currentState = DroneAIState.Circling;
+                        break;
+                    case DroneAIArchetype.Flanker:
+                        currentState = DroneAIState.Flanking;
+                        break;
+                    case DroneAIArchetype.Opportunist:
+                        currentState = DroneAIState.Repositioning;
+                        break;
+                    default:
+                        currentState = DroneAIState.Approaching;
+                        break;
+                }
+            }
+        }
+
+        // 4. Compute unique dynamic waypoint position
+        _currentOrbitAngleDeg += personality.orbitSpeed * dt;
+
+        float sway = Mathf.Sin(Time.time * 1.6f + _swayPhase) * 0.35f;
+        float altSway = Mathf.Cos(Time.time * 1.3f + _swayPhase * 0.8f) * 0.25f;
+
+        Vector3 desiredWaypointPos = targetCenter;
+        float targetFlightSpeed = personality.approachSpeed;
+
+        switch (currentState)
+        {
+            case DroneAIState.Attacking:
+                desiredWaypointPos = targetCenter + Vector3.up * 0.4f;
+                targetFlightSpeed = personality.attackSpeed;
+                break;
+
+            case DroneAIState.Retreating:
+                Vector3 awayDir = (myPos - targetCenter);
+                awayDir.y = 0f;
+                if (awayDir.sqrMagnitude < 0.01f) awayDir = -forwardDir;
+                awayDir.Normalize();
+
+                desiredWaypointPos = targetCenter + awayDir * personality.retreatDistance + Vector3.up * (personality.preferredAltitude + 2.0f);
+                targetFlightSpeed = personality.approachSpeed * 1.15f;
+                break;
+
+            case DroneAIState.Circling:
+                Quaternion orbitRot = Quaternion.AngleAxis(_currentOrbitAngleDeg + sway * 15f, Vector3.up);
+                Vector3 orbitOffset = (orbitRot * forwardDir) * personality.orbitRadius;
+                desiredWaypointPos = targetCenter + orbitOffset + Vector3.up * (personality.preferredAltitude + altSway);
+                targetFlightSpeed = personality.approachSpeed;
+                break;
+
+            case DroneAIState.Flanking:
+                Quaternion flankRot = Quaternion.AngleAxis(personality.flankAngleOffset + sway * 10f, Vector3.up);
+                Vector3 flankOffset = (flankRot * forwardDir) * personality.preferredDistance;
+                desiredWaypointPos = targetCenter + flankOffset + Vector3.up * (personality.preferredAltitude + altSway);
+                targetFlightSpeed = personality.approachSpeed;
+                break;
+
+            case DroneAIState.Repositioning:
+                Quaternion repRot = Quaternion.AngleAxis(_currentOrbitAngleDeg * 0.5f, Vector3.up);
+                Vector3 repOffset = (repRot * forwardDir) * personality.preferredDistance;
+                desiredWaypointPos = targetCenter + repOffset + Vector3.up * (personality.preferredAltitude + altSway * 1.5f);
+                targetFlightSpeed = personality.approachSpeed * 1.1f;
+                break;
+
+            case DroneAIState.Approaching:
+            default:
+                float angle = _currentOrbitAngleDeg + (member.droneIndex * 45f);
+                Quaternion appRot = Quaternion.AngleAxis(angle, Vector3.up);
+                Vector3 appOffset = (appRot * forwardDir) * personality.preferredDistance;
+                desiredWaypointPos = targetCenter + appOffset + Vector3.up * (personality.preferredAltitude + altSway);
+                targetFlightSpeed = personality.approachSpeed;
+                break;
+        }
+
+        // Clamp against environmental obstacles
+        desiredWaypointPos = director.ClampToNavigableSpace(targetCenter, desiredWaypointPos);
+        member.tacticalWaypoint.position = desiredWaypointPos;
+
+        // Smooth flight speed adjustment
+        currentFlightSpeed = Mathf.MoveTowards(member.followTarget.moveSpeed, targetFlightSpeed, 10.0f * dt);
+        member.followTarget.moveSpeed = currentFlightSpeed;
+    }
+
+    private void EvaluateTacticalDecision(Transform target)
+    {
+        if (target == null || currentState == DroneAIState.Attacking || currentState == DroneAIState.Retreating)
+            return;
+
+        bool canAttack = (currentAttackCooldown <= 0f);
+
+        switch (personality.archetype)
+        {
+            case DroneAIArchetype.AggressiveChaser:
+                if (canAttack)
+                {
+                    if (director.TryAcquireAttackToken(this))
+                    {
+                        StartAttack();
+                    }
+                    else
+                    {
+                        currentState = DroneAIState.Approaching;
+                    }
+                }
+                else
+                {
+                    currentState = DroneAIState.Approaching;
+                }
+                break;
+
+            case DroneAIArchetype.RangedHarasser:
+                if (personality.canRangedAttack && canAttack)
+                {
+                    float dist = Vector3.Distance(transform.position, target.position);
+                    if (dist <= personality.rangedAttackDistance)
+                    {
+                        FireRangedBurst(target);
+                        currentAttackCooldown = director.rangedAttackCooldown + UnityEngine.Random.Range(-0.4f, 0.4f);
+                    }
+                }
+                else if (canAttack && UnityEngine.Random.value < (personality.aggression * 0.4f))
+                {
+                    if (director.TryAcquireAttackToken(this))
+                    {
+                        StartAttack();
+                    }
+                }
+                break;
+
+            case DroneAIArchetype.CirclerOrbiter:
+                currentState = DroneAIState.Circling;
+                if (canAttack && UnityEngine.Random.value < (personality.aggression * 0.35f))
+                {
+                    if (director.TryAcquireAttackToken(this))
+                    {
+                        StartAttack();
+                    }
+                }
+                break;
+
+            case DroneAIArchetype.Flanker:
+                currentState = DroneAIState.Flanking;
+                if (canAttack && UnityEngine.Random.value < (personality.aggression * 0.5f))
+                {
+                    if (director.TryAcquireAttackToken(this))
+                    {
+                        StartAttack();
+                    }
+                }
+                break;
+
+            case DroneAIArchetype.Opportunist:
+                if (canAttack && UnityEngine.Random.value < (personality.aggression * 0.6f))
+                {
+                    if (director.TryAcquireAttackToken(this))
+                    {
+                        StartAttack();
+                    }
+                    else
+                    {
+                        currentState = DroneAIState.Repositioning;
+                    }
+                }
+                else
+                {
+                    if (UnityEngine.Random.value < 0.3f)
+                    {
+                        personality.preferredAltitude = UnityEngine.Random.Range(director.altitudeRange.x, director.altitudeRange.y + 1.5f);
+                    }
+                    currentState = DroneAIState.Repositioning;
+                }
+                break;
+        }
+    }
+
+    private void StartAttack()
+    {
+        currentState = DroneAIState.Attacking;
+        _attackTimeoutTimer = 0f;
+    }
+
+    /// <summary>
+    /// Called when this drone successfully executes a strike on the target.
+    /// Only this drone enters retreat on its individual cooldown; other drones remain active.
+    /// </summary>
+    public void OnStrikeDelivered()
+    {
+        currentState = DroneAIState.Retreating;
+        retreatTimer = personality != null ? personality.retreatDuration : 2.5f;
+        currentAttackCooldown = personality != null ? personality.attackCooldown : 4.5f;
+    }
+
+    public void CancelAttack()
+    {
+        if (director != null)
+        {
+            director.ReleaseAttackToken(this);
+        }
+        currentState = DroneAIState.Retreating;
+        retreatTimer = 1.5f;
+    }
+
+    private void FireRangedBurst(Transform target)
+    {
+        if (target == null) return;
+
+        Vector3 startPos = transform.position;
+        Vector3 targetPos = target.position;
+
+        if (_tracerLine == null)
+        {
+            _tracerLine = gameObject.GetComponent<LineRenderer>();
+            if (_tracerLine == null)
+            {
+                _tracerLine = gameObject.AddComponent<LineRenderer>();
+            }
+            _tracerLine.positionCount = 2;
+            _tracerLine.startWidth = 0.08f;
+            _tracerLine.endWidth = 0.08f;
+            _tracerLine.useWorldSpace = true;
+            if (_tracerLine.sharedMaterial == null)
+            {
+                Shader s = Shader.Find("Sprites/Default");
+                if (s != null) _tracerLine.material = new Material(s);
+            }
+            _tracerLine.startColor = new Color(1f, 0.5f, 0.1f, 0.9f);
+            _tracerLine.endColor = new Color(1f, 0.8f, 0.2f, 0.9f);
+        }
+
+        _tracerLine.enabled = true;
+        _tracerLine.SetPosition(0, startPos);
+        _tracerLine.SetPosition(1, targetPos);
+        _tracerTimer = 0.15f;
+
+        CanonHealth canonHealth = target.GetComponentInParent<CanonHealth>() ?? target.GetComponentInChildren<CanonHealth>();
+        if (canonHealth != null)
+        {
+            canonHealth.TakeDamage(1);
+            if (canonHealth.IsDestroyed)
+            {
+                if (director != null)
+                {
+                    director.ExecuteDroneStrike(this, target);
+                }
+            }
+        }
+    }
+
+    // Regulates adaptive flight speed based on distance and wingman positions (legacy fallback).
     public void UpdateBrain(float baseSpeed, float maxSpeed, float acceleration, float dt)
     {
         if (director == null || member == null || member.followTarget == null || member.tacticalWaypoint == null)
@@ -180,6 +699,44 @@ public class DroneDirector : MonoBehaviour
     [Header("Randomized Attack Intelligence (Read Only)")]
     public TacticalAttackPattern currentAttackPattern = TacticalAttackPattern.ConvergingPincer;
 
+    [Header("AI Coordination & Concurrency")]
+    [Tooltip("Enable independent AI profiles and autonomous decision making per drone.")]
+    public bool enableAutonomousIndividualAI = true;
+
+    [Tooltip("Maximum number of drones allowed to actively dive/strike the target at the same time.")]
+    [Range(1, 4)]
+    public int maxConcurrentAttackers = 1;
+
+    [Tooltip("Minimum delay (seconds) between any two drone strikes so the player has breathing room.")]
+    [Min(0f)]
+    public float globalAttackCooldown = 0.8f;
+
+    [Header("AI Archetype Weights (Relative Probabilities)")]
+    [Range(0, 100)] public int weightAggressiveChaser = 25;
+    [Range(0, 100)] public int weightRangedHarasser = 25;
+    [Range(0, 100)] public int weightCirclerOrbiter = 25;
+    [Range(0, 100)] public int weightFlanker = 15;
+    [Range(0, 100)] public int weightOpportunist = 10;
+
+    [Header("AI Personality Ranges (Randomized per Drone)")]
+    public Vector2 aggressionRange = new Vector2(0.25f, 0.95f);
+    public Vector2 preferredDistanceRange = new Vector2(5.0f, 11.0f);
+    public Vector2 strikeDistanceRange = new Vector2(2.0f, 2.8f);
+    public Vector2 approachSpeedRange = new Vector2(5.0f, 8.0f);
+    public Vector2 attackSpeedRange = new Vector2(9.5f, 13.0f);
+    public Vector2 decisionIntervalRange = new Vector2(0.3f, 0.7f);
+    public Vector2 reactionTimeRange = new Vector2(0.1f, 0.35f);
+    public Vector2 attackCooldownRange = new Vector2(3.5f, 6.5f);
+    public Vector2 orbitRadiusRange = new Vector2(6.0f, 11.0f);
+    public Vector2 orbitSpeedRange = new Vector2(25.0f, 50.0f);
+    public Vector2 altitudeRange = new Vector2(1.6f, 4.2f);
+    public Vector2 retreatDurationRange = new Vector2(2.0f, 3.2f);
+
+    [Header("Ranged Harasser Visuals")]
+    public bool allowRangedVisuals = true;
+    public float rangedAttackRange = 14.0f;
+    public float rangedAttackCooldown = 3.5f;
+
     [Header("Area Control & Separation")]
     public float minDroneSeparation = 5.5f;
     public float separationRepulsionStrength = 2.0f;
@@ -240,6 +797,42 @@ public class DroneDirector : MonoBehaviour
     private float attackAltitudeB;
     private float egressAngleA;
     private float egressAngleB;
+
+    private readonly HashSet<DroneBrain> _activeAttackers = new HashSet<DroneBrain>();
+    private float _lastGlobalStrikeTime = -10f;
+
+    /// <summary>
+    /// Attempts to acquire an attack authorization token for the requesting drone.
+    /// Limits concurrent attackers to maxConcurrentAttackers and enforces globalAttackCooldown.
+    /// </summary>
+    public bool TryAcquireAttackToken(DroneBrain brain)
+    {
+        if (brain == null) return false;
+        if (_activeAttackers.Contains(brain)) return true;
+        if (Time.time - _lastGlobalStrikeTime < globalAttackCooldown) return false;
+        if (_activeAttackers.Count < maxConcurrentAttackers)
+        {
+            _activeAttackers.Add(brain);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Releases the attack token held by the drone so other squadmates can attack.
+    /// </summary>
+    public void ReleaseAttackToken(DroneBrain brain)
+    {
+        if (brain != null)
+        {
+            _activeAttackers.Remove(brain);
+        }
+    }
+
+    public void RecordGlobalStrike()
+    {
+        _lastGlobalStrikeTime = Time.time;
+    }
 
     [System.Serializable]
     public class DroneSquadMember
@@ -360,7 +953,15 @@ public class DroneDirector : MonoBehaviour
         int targetCount = droneSpanSystem != null ? droneSpanSystem.DroneCount : squad.Count;
         if (targetCount != lastSpawnedCount && targetCount > 0)
         {
-            SpawnDrones();
+            lastSpawnedCount = targetCount;
+            if (droneSpanSystem != null)
+            {
+                droneSpanSystem.SyncToTargetCount();
+            }
+            else
+            {
+                SpawnDrones();
+            }
         }
 
         bool targetIsActive = (target != null && target.gameObject.activeInHierarchy);
@@ -371,10 +972,17 @@ public class DroneDirector : MonoBehaviour
             lastKnownTargetPos = target.position;
             lastKnownTargetForward = target.forward;
 
-            UpdateCombatStateMachine();
-            UpdateTacticalWaypoints(lastKnownTargetPos, lastKnownTargetForward);
-            ApplyInterDroneSeparation();
-            UpdateSquadFlightSpeeds();
+            if (enableAutonomousIndividualAI)
+            {
+                UpdateAutonomousCombat();
+            }
+            else
+            {
+                UpdateCombatStateMachine();
+                UpdateTacticalWaypoints(lastKnownTargetPos, lastKnownTargetForward);
+                ApplyInterDroneSeparation();
+                UpdateSquadFlightSpeeds();
+            }
         }
         else
         {
@@ -405,6 +1013,58 @@ public class DroneDirector : MonoBehaviour
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Executes the individual autonomous AI for each drone in the squad:
+    /// - Follows target in formation if beyond engagementDistance.
+    /// - Within engagementDistance, runs each drone's unique AI state machine, dynamic waypoints, and attack decisions.
+    /// </summary>
+    private void UpdateAutonomousCombat()
+    {
+        float distToTarget = Vector3.Distance(GetSquadCentroid(), lastKnownTargetPos);
+        float exitThreshold = (currentPhase == CombatPhase.FollowTarget) ? engagementDistance : (engagementDistance + 1.5f);
+
+        if (distToTarget > exitThreshold)
+        {
+            if (currentPhase != CombatPhase.FollowTarget)
+            {
+                EnterPhase(CombatPhase.FollowTarget);
+            }
+
+            UpdateFollowWaypoints(lastKnownTargetPos, lastKnownTargetForward);
+            UpdateSquadFlightSpeeds();
+
+            for (int i = 0; i < squad.Count; i++)
+            {
+                if (squad[i] != null && squad[i].brain != null)
+                {
+                    squad[i].brain.currentState = DroneAIState.FollowFormation;
+                }
+            }
+            return;
+        }
+
+        // Within combat engagement range: tick each autonomous drone
+        currentPhase = CombatPhase.CoordinatedAttack;
+
+        for (int i = 0; i < squad.Count; i++)
+        {
+            DroneSquadMember member = squad[i];
+            if (member == null || member.droneObject == null || !member.droneObject.activeInHierarchy)
+                continue;
+
+            if (member.brain == null)
+            {
+                member.brain = member.droneObject.GetComponent<DroneBrain>();
+                if (member.brain == null) member.brain = member.droneObject.AddComponent<DroneBrain>();
+                member.brain.Initialize(this, member);
+            }
+
+            member.brain.TickAutonomousAI(target, lastKnownTargetPos, lastKnownTargetForward, Time.deltaTime);
+        }
+
+        ApplyInterDroneSeparation();
     }
 
     // Computes the average world position of all active squad drones.
@@ -800,6 +1460,45 @@ public class DroneDirector : MonoBehaviour
         }
 
         // Cannon destroyed after 5 attacks (or if no CanonHealth is attached)
+        targetEliminated = true;
+        victim.gameObject.SetActive(false);
+        SetupVictorySequence();
+    }
+
+    /// <summary>
+    /// Executes an autonomous individual drone strike on the target.
+    /// Only this attacking drone enters retreat on its individual cooldown; other drones remain active.
+    /// Releases the attack token so another ready drone can strike next.
+    /// </summary>
+    public void ExecuteDroneStrike(DroneBrain attacker, Transform victim)
+    {
+        if (victim == null || targetEliminated) return;
+
+        RecordGlobalStrike();
+
+        lastKnownTargetPos = victim.position;
+        lastKnownTargetForward = victim.forward;
+
+        CanonHealth canonHealth = victim.GetComponentInParent<CanonHealth>();
+        if (canonHealth == null) canonHealth = victim.GetComponentInChildren<CanonHealth>();
+
+        if (canonHealth != null)
+        {
+            canonHealth.TakeDamage(1);
+
+            if (!canonHealth.IsDestroyed)
+            {
+                // Cannon survived! Release attack token and order attacker to retreat individually
+                if (attacker != null)
+                {
+                    ReleaseAttackToken(attacker);
+                    attacker.OnStrikeDelivered();
+                }
+                return;
+            }
+        }
+
+        // Cannon destroyed!
         targetEliminated = true;
         victim.gameObject.SetActive(false);
         SetupVictorySequence();
@@ -1401,7 +2100,7 @@ public class DroneDirector : MonoBehaviour
     }
 
     // Clamps waypoint positions against environmental obstacles.
-    private Vector3 ClampToNavigableSpace(Vector3 origin, Vector3 desiredPos)
+    public Vector3 ClampToNavigableSpace(Vector3 origin, Vector3 desiredPos)
     {
         Vector3 dir = desiredPos - origin;
         float dist = dir.magnitude;
@@ -1639,6 +2338,7 @@ public class DroneDirector : MonoBehaviour
                 }
             }
         }
+        _activeAttackers.Clear();
         squad.Clear();
     }
 
@@ -1667,6 +2367,11 @@ public class DroneDirector : MonoBehaviour
 
             if (isMatch)
             {
+                if (squad[i].brain != null)
+                {
+                    ReleaseAttackToken(squad[i].brain);
+                }
+
                 if (squad[i].tacticalWaypoint != null)
                 {
                     if (Application.isPlaying) Destroy(squad[i].tacticalWaypoint.gameObject);
@@ -1680,9 +2385,9 @@ public class DroneDirector : MonoBehaviour
 
         if (!removed) return;
 
-        // Decrement drone count and update lastSpawnedCount so Update() doesn't respawn
-        droneCount = squad.Count;
-        lastSpawnedCount = droneCount;
+        // Destroy the dead drone GameObject cleanly so it doesn't linger in hierarchy
+        if (Application.isPlaying) Destroy(destroyedDrone);
+        else DestroyImmediate(destroyedDrone);
 
         // Re-index remaining squad members
         for (int i = 0; i < squad.Count; i++)
@@ -1697,9 +2402,25 @@ public class DroneDirector : MonoBehaviour
         // Re-wire obstacle avoidance for surviving drones
         WireIgnoredColliders();
 
+        // Notify DroneSpanSystem to trigger replacement spawning
+        if (droneSpanSystem != null)
+        {
+            droneSpanSystem.OnDroneDestroyed(destroyedDrone);
+        }
+
         if (squad.Count == 0)
         {
-            Debug.Log("<color=green>[DroneDirector] ALL DRONES ELIMINATED! Victory!</color>");
+            bool hasMoreToSpawn = droneSpanSystem != null && droneSpanSystem.AutoRespawn &&
+                                  (droneSpanSystem.MaxTotalSpawns == 0 || droneSpanSystem.TotalDronesSpawned < droneSpanSystem.MaxTotalSpawns);
+
+            if (!hasMoreToSpawn)
+            {
+                Debug.Log("<color=green>[DroneDirector] ALL DRONES ELIMINATED! Victory!</color>");
+            }
+            else
+            {
+                Debug.Log("<color=yellow>[DroneDirector] Squad eliminated, but AutoRespawn is active. Replacement wave incoming!</color>");
+            }
             return;
         }
 
@@ -1713,6 +2434,6 @@ public class DroneDirector : MonoBehaviour
             AssignDynamicRoles();
         }
 
-        Debug.Log($"<color=cyan>[DroneDirector] Drone destroyed! droneCount is now: {droneCount}. Active squad size: {squad.Count}</color>");
+        Debug.Log($"<color=cyan>[DroneDirector] Drone destroyed! Active squad size: {squad.Count}/{droneCount}</color>");
     }
 }
