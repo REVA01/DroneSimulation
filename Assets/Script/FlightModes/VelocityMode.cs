@@ -2,6 +2,9 @@ using UnityEngine;
 
 namespace Drone.Runtime.FlightModes
 {
+    /// <summary>
+    /// Implements autonomous horizontal velocity cruise flight mode combining velocity, attitude, and altitude cascading controllers.
+    /// </summary>
     public class VelocityMode : IFlightMode
     {
         private readonly VelocityToAngleController velocityController;
@@ -14,7 +17,15 @@ namespace Drone.Runtime.FlightModes
         public string ModeName => "VELOCITY CRUISE";
         public MixingStrategy Mixing => MixingStrategy.PrioritizeThrottle;
 
-        // Initializes the velocity flight mode with cascading controllers and limits.
+        /// <summary>
+        /// Constructs a VelocityMode instance linking the required cascading controllers and kinematic speed limits.
+        /// </summary>
+        /// <param name="velocityController">Outer velocity-to-angle controller.</param>
+        /// <param name="angleController">Intermediate angle-to-rate controller.</param>
+        /// <param name="altitudeController">Vertical climb/hover controller.</param>
+        /// <param name="maxForwardSpeed">Maximum forward flight speed in m/s.</param>
+        /// <param name="maxSideSpeed">Maximum lateral strafe flight speed in m/s.</param>
+        /// <param name="maxYawRate">Maximum yaw rotation rate in deg/s.</param>
         public VelocityMode(
             VelocityToAngleController velocityController,
             AngleToRateController angleController,
@@ -31,7 +42,13 @@ namespace Drone.Runtime.FlightModes
             this.maxYawRate = maxYawRate;
         }
 
-        // Calculates flight control rates and throttle from user inputs and drone state.
+        /// <summary>
+        /// Computes 3-axis target angular rates and throttle command for the current timestep.
+        /// </summary>
+        /// <param name="inputs">Current normalized control stick inputs.</param>
+        /// <param name="state">Current physical drone kinematics state.</param>
+        /// <param name="dt">Physics timestep in seconds.</param>
+        /// <returns>FlightControlOutput containing demanded rates and collective throttle.</returns>
         public FlightControlOutput Calculate(DroneInputs inputs, DroneState state, float dt)
         {
             float targetSideVelocity = inputs.Roll * maxSideSpeed;
@@ -60,7 +77,9 @@ namespace Drone.Runtime.FlightModes
             };
         }
 
-        // Resets the cascading controllers.
+        /// <summary>
+        /// Resets all internal cascade controller states (integrators, derivative memory).
+        /// </summary>
         public void Reset()
         {
             velocityController.Reset();

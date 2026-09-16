@@ -2,7 +2,8 @@ using UnityEngine;
 using UnityEngine.Events;
 
 /// <summary>
-/// CanonHealth: Tracks Cannon health. Can withstand 5 drone attacks before being destroyed.
+/// Tracks cannon durability and attack tolerance.
+/// Withstands 5 distinct drone attacks before triggering destruction and defeat sequence.
 /// </summary>
 public class CanonHealth : MonoBehaviour
 {
@@ -26,15 +27,20 @@ public class CanonHealth : MonoBehaviour
 
     public bool IsDestroyed => isDestroyed;
 
+    /// <summary>
+    /// Initializes current health to maximum health capacity.
+    /// </summary>
     private void Awake()
     {
         currentHealth = maxHealth;
     }
 
     /// <summary>
-    /// Deals 1 attack damage to the cannon.
-    /// Returns true if damage was applied, or false if on cooldown or already destroyed.
+    /// Deals discrete attack strike damage to the cannon.
+    /// Enforces hit cooldown to prevent multiple overlapping hits in a single physics frame.
     /// </summary>
+    /// <param name="damage">Number of health points / attacks to deduct.</param>
+    /// <returns>True if damage was successfully registered, false if on cooldown or already destroyed.</returns>
     public bool TakeDamage(int damage = 1)
     {
         if (isDestroyed) return false;
@@ -61,6 +67,9 @@ public class CanonHealth : MonoBehaviour
         return true;
     }
 
+    /// <summary>
+    /// Deactivates the cannon upon reaching zero health and invokes defeat events.
+    /// </summary>
     private void DestroyCanon()
     {
         if (isDestroyed) return;
@@ -74,6 +83,9 @@ public class CanonHealth : MonoBehaviour
         gameObject.SetActive(false);
     }
 
+    /// <summary>
+    /// Resets cannon health and clears cooldown timers.
+    /// </summary>
     public void ResetHealth()
     {
         isDestroyed = false;

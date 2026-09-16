@@ -29,9 +29,9 @@ public class DroneHealth : MonoBehaviour
     }
 
     [Header("Damage Slowdown Settings")]
-    [Tooltip("Speed multiplier applied to the drone while receiving damage (e.g. 0.525 = 50% faster than previous 0.35).")]
+    [Tooltip("Speed multiplier applied to the drone while receiving damage (0.70 = 30% speed reduction).")]
     [Range(0.05f, 1f)]
-    public float damageSlowdownMultiplier = 0.8f;
+    public float damageSlowdownMultiplier = 0.70f;
 
     [Tooltip("How long in seconds the slowdown effect persists after the last damage hit.")]
     public float slowdownRecoveryTime = 0.15f;
@@ -46,13 +46,43 @@ public class DroneHealth : MonoBehaviour
     [Tooltip("Health points recovered per second when not taking laser damage.")]
     public float recoveryRate = 20f;
 
+    [Header("Laser Targeting State")]
+    [Tooltip("True exclusively when this exact drone is actively targeted by the laser.")]
+    [SerializeField] private bool isLaserTargeted = false;
+
     private float timeSinceLastHit = 0f;
     private bool isTakingDamage = false;
     private bool isDestroyed = false;
+    private CanonMovement cachedCanonMovement;
 
     public bool IsDestroyed => isDestroyed;
     public bool IsTakingDamage => isTakingDamage;
+    public bool IsTargetedByLaser => isLaserTargeted && !isDestroyed;
 
+    /// <summary>
+    /// Explicitly sets or clears the laser targeting state on this specific drone.
+    /// When targeted is false, the speed reduction is removed immediately.
+    /// </summary>
+    public void SetLaserTargeted(bool targeted)
+    {
+        if (isDestroyed && targeted) return;
+
+        isLaserTargeted = targeted;
+
+        if (targeted)
+        {
+            timeSinceLastHit = 0f;
+            isTakingDamage = true;
+        }
+        else
+        {
+            isTakingDamage = false;
+        }
+    }
+
+    /// <summary>
+    /// Synchronizes health limits and caches system references.
+    /// </summary>
     private void Awake()
     {
         // If maxHealth wasn't customized beyond default or health was set in Inspector, sync maxHealth
@@ -64,16 +94,25 @@ public class DroneHealth : MonoBehaviour
         {
             maxHealth = health;
         }
+
+        cachedCanonMovement = FindAnyObjectByType<CanonMovement>();
+        damageSlowdownMultiplier = 0.70f;
     }
 
+    /// <summary>
+    /// Tracks laser damage cooldowns, damage slowdown expiration, and health regeneration when unhit.
+    /// </summary>
     private void Update()
     {
         timeSinceLastHit += Time.deltaTime;
 
-        // Clear taking damage flag when laser is no longer hitting the drone
-        if (timeSinceLastHit >= slowdownRecoveryTime)
+        // Immediately clear targeting and remove slowdown if laser stopped hitting this drone
+        if (timeSinceLastHit > 0.05f)
         {
-            isTakingDamage = false;
+            if (isLaserTargeted || isTakingDamage)
+            {
+                SetLaserTargeted(false);
+            }
         }
 
         // If health was manually set to <= 0 in Inspector or depleted
@@ -100,6 +139,7 @@ public class DroneHealth : MonoBehaviour
     {
         if (isDestroyed) return;
 
+        SetLaserTargeted(true);
         float damageThisFrame = laserDamagePerSecond * deltaTime;
         TakeDamage(damageThisFrame);
     }
@@ -123,31 +163,23 @@ public class DroneHealth : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Executes drone destruction sequence, notifies targeting systems, deactivates GameObject, and alerts squad director.
+    /// </summary>
     private void DestroyDrone()
     {
         if (isDestroyed) return;
         isDestroyed = true;
         isTakingDamage = false;
+        isLaserTargeted = false;
 
         Debug.Log($"<color=red>[DroneHealth] DRONE DESTROYED ({gameObject.name})! Health depleted.</color>");
 
-        // Immediately notify AimAssist to leave this target
-        AimAssist assist = FindAnyObjectByType<AimAssist>();
-        if (assist != null && assist.CurrentTarget != null)
+        // Immediately notify CanonMovement so laser shuts off and leaves the destroyed drone
+        if (cachedCanonMovement == null) cachedCanonMovement = FindAnyObjectByType<CanonMovement>();
+        if (cachedCanonMovement != null)
         {
-            if (assist.CurrentTarget == gameObject ||
-                gameObject.transform.IsChildOf(assist.CurrentTarget.transform) ||
-                assist.CurrentTarget.transform.IsChildOf(gameObject.transform))
-            {
-                assist.OnTargetDestroyed();
-            }
-        }
-
-        // Immediately notify FinalGame so laser shuts off and leaves the destroyed drone
-        FinalGame fg = FindAnyObjectByType<FinalGame>();
-        if (fg != null)
-        {
-            fg.OnTargetDroneDestroyed(gameObject);
+            cachedCanonMovement.OnTargetDroneDestroyed(gameObject);
         }
 
         // Deactivate drone GameObject
@@ -160,10 +192,14 @@ public class DroneHealth : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Restores full health and clears damage state flags.
+    /// </summary>
     public void ResetHealth()
     {
         isDestroyed = false;
         isTakingDamage = false;
+        isLaserTargeted = false;
         health = maxHealth;
         timeSinceLastHit = 0f;
     }

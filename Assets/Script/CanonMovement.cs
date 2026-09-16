@@ -3,10 +3,10 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// FinalGame: Unified Controller combining Cannon Movement, Laser Firing,
+/// CanonMovement: Unified Controller combining Cannon Movement, Laser Firing,
 /// and Drone Destruction (deactivating via SetActive(false) on laser hit).
 /// </summary>
-public class FinalGame : MonoBehaviour
+public class CanonMovement : MonoBehaviour
 {
     [Header("--- Cannon Movement Setup ---")]
     [Tooltip("Parent base object that rotates horizontally (yaw 360°). If empty, will auto-detect.")]
@@ -61,21 +61,40 @@ public class FinalGame : MonoBehaviour
     [Tooltip("Physics layers the laser raycast can hit.")]
     public LayerMask hitLayers = ~0;
 
+    [Header("--- Laser Target Tracking ---")]
+    [Tooltip("The specific drone currently targeted and hit by the laser.")]
+    [SerializeField] private GameObject currentTargetDrone = null;
+    public GameObject CurrentTargetDrone => currentTargetDrone;
+
+    private DroneHealth currentTargetDroneHealth = null;
+
     private float currentPitch = 0f;
     private Quaternion initialGunRotation;
     private float laserTimer = 0f;
-    private AimAssist aimAssist;
 
     public float CurrentPitch => currentPitch;
+    public bool IsLaserActive => (lineRenderer != null && lineRenderer.enabled) ||
+                                 Input.GetKey(fireKey) ||
+                                 (allowMouseFire && Input.GetMouseButton(0)) ||
+                                 laserTimer > 0f;
 
     /// <summary>
     /// Called immediately when a drone is destroyed by the laser or health reaches 0.
     /// If the player is still holding fire (F or Left Click), the laser remains active.
     /// If the fire key is not held, the laser turns off immediately.
-    /// Aim Assist always detaches from the destroyed drone.
     /// </summary>
     public void OnTargetDroneDestroyed(GameObject destroyedDrone)
     {
+        if (currentTargetDrone == destroyedDrone || (currentTargetDroneHealth != null && currentTargetDroneHealth.gameObject == destroyedDrone))
+        {
+            if (currentTargetDroneHealth != null)
+            {
+                currentTargetDroneHealth.SetLaserTargeted(false);
+                currentTargetDroneHealth = null;
+            }
+            currentTargetDrone = null;
+        }
+
         bool isKeyHeld = Input.GetKey(fireKey) || (allowMouseFire && Input.GetMouseButton(0));
 
         // If player is not holding fire key (F / Left Mouse), turn off laser
@@ -83,44 +102,24 @@ public class FinalGame : MonoBehaviour
         {
             StopLaser();
         }
-
-        if (aimAssist != null && aimAssist.IsTracking)
-        {
-            aimAssist.OnTargetDestroyed();
-        }
     }
 
+    /// <summary>
+    /// Disables redundant legacy scripts and initializes laser rendering.
+    /// </summary>
     private void Awake()
     {
-        // 1. Automatically disable any duplicate LasserGun or CanonMovement scripts on this cannon
-        // so that duplicate lines and double-speed rotations NEVER happen!
         DisableDuplicateScripts();
-
-        // 2. Setup laser and LineRenderer
         InitializeLaser();
     }
 
+    /// <summary>
+    /// Auto-detects cannon transforms and ensures CanonHealth is attached.
+    /// </summary>
     private void Start()
     {
         InitializeCannonMovement();
 
-        // Cache or auto-add AimAssist
-        aimAssist = GetComponent<AimAssist>() ?? GetComponentInParent<AimAssist>() ?? GetComponentInChildren<AimAssist>();
-        if (aimAssist == null)
-        {
-            aimAssist = gameObject.AddComponent<AimAssist>();
-        }
-
-        if (aimAssist != null)
-        {
-            if (aimAssist.canonBase == null) aimAssist.canonBase = canonBase;
-            if (aimAssist.canonRotate == null) aimAssist.canonRotate = canonRotate;
-            if (aimAssist.firePoint == null) aimAssist.firePoint = firePoint;
-            aimAssist.lockOnLaserTouch = true;
-            aimAssist.SyncInitialRotation(initialGunRotation);
-        }
-
-        // Ensure CanonHealth is attached so the cannon withstands 5 drone attacks
         Transform healthTarget = (canonBase != null) ? canonBase : transform.root;
         if (healthTarget.GetComponentInChildren<CanonHealth>() == null && healthTarget.GetComponentInParent<CanonHealth>() == null)
         {
@@ -128,6 +127,9 @@ public class FinalGame : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Processes manual cannon rotation and laser firing each frame.
+    /// </summary>
     private void Update()
     {
         HandleCannonMovement();
@@ -136,9 +138,11 @@ public class FinalGame : MonoBehaviour
 
     #region Duplicate Prevention
 
+    /// <summary>
+    /// Searches the transform hierarchy and disables obsolete LasserGun or duplicate CanonMovement scripts.
+    /// </summary>
     private void DisableDuplicateScripts()
     {
-        // Search root and all children for any old LasserGun or duplicate CanonMovement
         Transform rootTransform = (canonBase != null) ? canonBase : transform.root;
         MonoBehaviour[] allScripts = rootTransform.GetComponentsInChildren<MonoBehaviour>(true);
 
@@ -150,7 +154,6 @@ public class FinalGame : MonoBehaviour
             {
                 s.enabled = false;
             }
-            // If another FinalGame is on a different part of the same cannon, disable it
             else if (sName == "FinalGame" && s != this)
             {
                 s.enabled = false;
@@ -162,9 +165,11 @@ public class FinalGame : MonoBehaviour
 
     #region Initialization
 
+    /// <summary>
+    /// Resolves base and barrel transform hierarchies and records initial barrel orientation.
+    /// </summary>
     private void InitializeCannonMovement()
     {
-        // Auto-assign base if not assigned
         if (canonBase == null)
         {
             if (transform.name.ToLower().Contains("base"))
@@ -185,7 +190,6 @@ public class FinalGame : MonoBehaviour
             }
         }
 
-        // Auto-assign barrel if not assigned
         if (canonRotate == null)
         {
             Transform[] children = canonBase.GetComponentsInChildren<Transform>(true);
@@ -206,9 +210,11 @@ public class FinalGame : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Auto-locates the muzzle fire point and configures the LineRenderer component.
+    /// </summary>
     private void InitializeLaser()
     {
-        // 1. Auto-find FirePoint
         if (firePoint == null)
         {
             Transform searchRoot = (canonBase != null) ? canonBase : transform.root;
@@ -229,7 +235,6 @@ public class FinalGame : MonoBehaviour
             }
         }
 
-        // 2. Setup LineRenderer
         if (lineRenderer == null)
         {
             lineRenderer = GetComponent<LineRenderer>();
@@ -242,6 +247,9 @@ public class FinalGame : MonoBehaviour
         ConfigureLineRenderer();
     }
 
+    /// <summary>
+    /// Configures LineRenderer widths, materials, colors, and initial visibility state.
+    /// </summary>
     private void ConfigureLineRenderer()
     {
         if (lineRenderer == null) return;
@@ -269,6 +277,9 @@ public class FinalGame : MonoBehaviour
 
     #region Cannon Movement
 
+    /// <summary>
+    /// Reads player horizontal (A/D) and vertical (W/S) input and rotates cannon base and barrel.
+    /// </summary>
     private void HandleCannonMovement()
     {
         // Horizontal Base Yaw Rotation (A / D or Left / Right Arrows)
@@ -284,30 +295,23 @@ public class FinalGame : MonoBehaviour
         bool hasHorizontalInput = Mathf.Abs(horizontalInput) > 0.01f;
         bool hasVerticalInput = Mathf.Abs(verticalInput) > 0.01f;
 
-        // 1. Horizontal: Player input takes priority when keys are pressed
-        // Otherwise (no input), AimAssist automatically tracks the drone horizontally
+        // 1. Horizontal Base Yaw Rotation (A / D)
         if (hasHorizontalInput && canonBase != null)
         {
             canonBase.Rotate(Vector3.up, horizontalInput * baseRotationSpeed * Time.deltaTime, Space.World);
         }
 
-        // 2. Vertical: Player input takes priority when keys are pressed
-        // Otherwise (no input), AimAssist automatically tracks the drone vertically
+        // 2. Vertical Barrel Pitch Tilt (W / S)
         if (hasVerticalInput && canonRotate != null)
         {
             currentPitch -= verticalInput * barrelRotationSpeed * Time.deltaTime;
             currentPitch = Mathf.Clamp(currentPitch, minVerticalAngle, maxVerticalAngle);
             canonRotate.localRotation = initialGunRotation * Quaternion.Euler(currentPitch, 0f, 0f);
-
-            if (aimAssist != null)
-            {
-                aimAssist.SyncPitch(currentPitch);
-            }
         }
     }
 
     /// <summary>
-    /// Synchronizes pitch angle from AimAssist when transitioning between auto-tracking and manual control.
+    /// Synchronizes pitch angle when manual or external controller sets pitch.
     /// </summary>
     public void SyncPitch(float pitch)
     {
@@ -322,12 +326,14 @@ public class FinalGame : MonoBehaviour
 
     #region Laser & Drone Destruction
 
+    /// <summary>
+    /// Checks for user fire key input (F or Left Click) and manages laser beam triggering and duration.
+    /// </summary>
     private void HandleLaserFiring()
     {
         bool isKeyDown = Input.GetKeyDown(fireKey) || (allowMouseFire && Input.GetMouseButtonDown(0));
         bool isKeyHeld = Input.GetKey(fireKey) || (allowMouseFire && Input.GetMouseButton(0));
 
-        // Firing is NOT connected with Aim Assist: ONLY user click/hold fires the laser
         if (isKeyHeld || isKeyDown)
         {
             FireLaser();
@@ -359,6 +365,7 @@ public class FinalGame : MonoBehaviour
         System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
         bool hitValidTarget = false;
+        GameObject hitDrone = null;
 
         foreach (var hit in hits)
         {
@@ -372,8 +379,8 @@ public class FinalGame : MonoBehaviour
             endPos = startPos + (direction * hitDist);
             hitValidTarget = true;
 
-            // Try to deactivate drone
-            if (TryDeactivateDrone(hit.collider))
+            // Try to hit drone
+            if (TryApplyLaserToDrone(hit.collider, out hitDrone))
             {
                 break;
             }
@@ -395,7 +402,7 @@ public class FinalGame : MonoBehaviour
                 float hitDist = (rHit.distance > 0.05f) ? rHit.distance : Vector3.Distance(startPos, rHit.point);
                 endPos = startPos + (direction * hitDist);
 
-                if (TryDeactivateDrone(rHit.collider))
+                if (TryApplyLaserToDrone(rHit.collider, out hitDrone))
                 {
                     break;
                 }
@@ -404,6 +411,9 @@ public class FinalGame : MonoBehaviour
             }
         }
 
+        // Update target tracking: immediately remove laser effect if target changed or was lost
+        UpdateTargetedDrone(hitDrone);
+
         // Draw laser beam
         lineRenderer.enabled = true;
         lineRenderer.SetPosition(0, startPos);
@@ -411,7 +421,7 @@ public class FinalGame : MonoBehaviour
     }
 
     /// <summary>
-    /// Immediately disables the laser line renderer.
+    /// Immediately disables the laser line renderer and removes laser effects from all drones.
     /// </summary>
     public void StopLaser()
     {
@@ -419,6 +429,62 @@ public class FinalGame : MonoBehaviour
         if (lineRenderer != null && lineRenderer.enabled)
         {
             lineRenderer.enabled = false;
+        }
+
+        // Immediately remove laser targeting on the tracked drone
+        if (currentTargetDroneHealth != null)
+        {
+            currentTargetDroneHealth.SetLaserTargeted(false);
+            currentTargetDroneHealth = null;
+        }
+        currentTargetDrone = null;
+
+        ClearAllDronesLaserTargeting();
+    }
+
+    /// <summary>
+    /// Updates the currently targeted drone reference.
+    /// If the laser switched to a different drone or lost its target,
+    /// the previously targeted drone's laser effect and speed reduction are removed immediately.
+    /// </summary>
+    private void UpdateTargetedDrone(GameObject newTarget)
+    {
+        if (currentTargetDrone != newTarget)
+        {
+            if (currentTargetDroneHealth != null)
+            {
+                currentTargetDroneHealth.SetLaserTargeted(false);
+            }
+
+            currentTargetDrone = newTarget;
+            currentTargetDroneHealth = newTarget != null ? (newTarget.GetComponent<DroneHealth>() ?? newTarget.GetComponentInChildren<DroneHealth>()) : null;
+
+            if (currentTargetDroneHealth != null)
+            {
+                currentTargetDroneHealth.SetLaserTargeted(true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Ensures all drones in the squad have their laser targeted state cleared immediately.
+    /// </summary>
+    public void ClearAllDronesLaserTargeting()
+    {
+        if (DroneDirector.Instance != null && DroneDirector.Instance.squad != null)
+        {
+            for (int i = 0; i < DroneDirector.Instance.squad.Count; i++)
+            {
+                var member = DroneDirector.Instance.squad[i];
+                if (member != null && member.droneObject != null)
+                {
+                    DroneHealth health = member.droneObject.GetComponent<DroneHealth>() ?? member.droneObject.GetComponentInChildren<DroneHealth>();
+                    if (health != null)
+                    {
+                        health.SetLaserTargeted(false);
+                    }
+                }
+            }
         }
     }
 
@@ -436,14 +502,12 @@ public class FinalGame : MonoBehaviour
     }
 
     /// <summary>
-    /// Detects if the struck object is a drone (via components, rigids, or names) and disables it with SetActive(false).
+    /// Resolves the root GameObject of a drone from a hit collider.
     /// </summary>
-    private bool TryDeactivateDrone(Collider hitCollider)
+    private GameObject ResolveDroneRoot(Collider hitCollider)
     {
-        if (hitCollider == null) return false;
-        if (IsPartOfCannon(hitCollider)) return false;
-
-        GameObject droneRoot = null;
+        if (hitCollider == null) return null;
+        if (IsPartOfCannon(hitCollider)) return null;
 
         // 1. Search for drone flight components up the hierarchy
         MonoBehaviour[] components = hitCollider.GetComponentsInParent<MonoBehaviour>(true);
@@ -456,57 +520,67 @@ public class FinalGame : MonoBehaviour
                 typeName == "DroneBrain" ||
                 typeName == "DroneNPCFollowTarget")
             {
-                droneRoot = comp.gameObject;
-                break;
+                return comp.gameObject;
             }
         }
 
         // 2. Check Rigidbody attached to the drone
-        if (droneRoot == null && hitCollider.attachedRigidbody != null)
+        if (hitCollider.attachedRigidbody != null)
         {
             string rbName = hitCollider.attachedRigidbody.name.ToLower();
             if (rbName.Contains("drone") || rbName.Contains("tactical"))
             {
-                droneRoot = hitCollider.attachedRigidbody.gameObject;
+                return hitCollider.attachedRigidbody.gameObject;
             }
         }
 
         // 3. Check name of hit object or its root
-        if (droneRoot == null)
+        string nameLower = hitCollider.name.ToLower();
+        string rootNameLower = hitCollider.transform.root.name.ToLower();
+        if (nameLower.Contains("drone") || rootNameLower.Contains("drone") ||
+            nameLower.Contains("tactical") || rootNameLower.Contains("tactical"))
         {
-            string nameLower = hitCollider.name.ToLower();
-            string rootNameLower = hitCollider.transform.root.name.ToLower();
-            if (nameLower.Contains("drone") || rootNameLower.Contains("drone") ||
-                nameLower.Contains("tactical") || rootNameLower.Contains("tactical"))
-            {
-                droneRoot = hitCollider.transform.root.gameObject;
-            }
+            return hitCollider.transform.root.gameObject;
         }
 
-        // Apply laser damage to DroneHealth
+        return null;
+    }
+
+    /// <summary>
+    /// Checks if collider belongs to a drone, outputs the resolved drone root, and applies laser damage to its DroneHealth.
+    /// </summary>
+    private bool TryApplyLaserToDrone(Collider hitCollider, out GameObject hitDrone)
+    {
+        hitDrone = null;
+        GameObject droneRoot = ResolveDroneRoot(hitCollider);
+
         if (droneRoot != null && droneRoot.activeInHierarchy)
         {
-            // If AimAssist is on the cannon, connect/lock to this drone on laser hit
-            if (aimAssist != null && !aimAssist.IsTracking && aimAssist.lockOnLaserTouch && !aimAssist.IsInCooldown)
+            hitDrone = droneRoot;
+
+            AimAssist aim = GetComponent<AimAssist>();
+            if (aim != null && !aim.IsTracking)
             {
-                aimAssist.TryLockTarget(droneRoot);
+                aim.TryLockTarget(droneRoot);
             }
 
             DroneHealth droneHealth = hitCollider.GetComponentInParent<DroneHealth>();
             if (droneHealth == null)
             {
-                droneHealth = droneRoot.GetComponent<DroneHealth>();
+                droneHealth = droneRoot.GetComponent<DroneHealth>() ?? droneRoot.GetComponentInChildren<DroneHealth>();
                 if (droneHealth == null)
                 {
                     droneHealth = droneRoot.AddComponent<DroneHealth>();
                 }
             }
 
+            droneHealth.damageSlowdownMultiplier = 0.70f;
             droneHealth.TakeLaserDamage(Time.deltaTime);
 
             if (droneHealth.IsDestroyed)
             {
                 OnTargetDroneDestroyed(droneRoot);
+                hitDrone = null;
                 return true;
             }
 
@@ -514,6 +588,14 @@ public class FinalGame : MonoBehaviour
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Detects if the struck object is a drone and applies laser damage. Provided for backwards compatibility.
+    /// </summary>
+    private bool TryDeactivateDrone(Collider hitCollider)
+    {
+        return TryApplyLaserToDrone(hitCollider, out _);
     }
 
     /// <summary>

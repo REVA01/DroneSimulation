@@ -1,306 +1,188 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// AimAssist: Automatic Target-Lock and Tracking System.
+/// AimAssist: Automatically follows a drone whenever the laser points at or hits it.
 /// 
-/// Expected Flow:
-/// User Locks Drone -> Aim Assist Activated -> Automatically Follow Target ->
-/// Target Destroyed -> Aim Assist Deactivated -> Target Permanently Completed -> User Input Has No Effect.
+/// How it works:
+/// 1. No manual Inspector target setup: Target is detected 100% automatically in real-time.
+/// 2. Automatic Laser Lock: Whenever you point the laser ray/beam at ANY active drone,
+///    the system automatically detects that drone and begins tracking/following it.
+/// 3. Continuous Following: The cannon rotates horizontally (base yaw) and vertically (barrel pitch)
+///    to keep the laser centered on the drone until the drone is destroyed.
+/// 4. Manual Override: If you press WASD/Arrows to steer away from the drone, the lock breaks.
+/// 5. Safe: Never touches the drone's flight or physics systems; only rotates the cannon.
 /// </summary>
 public class AimAssist : MonoBehaviour
 {
-    [Header("--- Cannon & Aim References ---")]
-    [Tooltip("Parent base object that rotates horizontally (yaw 360°). Auto-detected if null.")]
+    [Header("--- Cannon Hierarchy References ---")]
+    [Tooltip("The horizontal rotating base of the cannon (Yaw). Auto-detected if unassigned.")]
     public Transform canonBase;
 
-    [Tooltip("Gun barrel that tilts vertically (pitch up/down). Auto-detected if null.")]
+    [Tooltip("The vertically tilting barrel of the cannon (Pitch). Auto-detected if unassigned.")]
     public Transform canonRotate;
 
-    [Tooltip("Point from where the aim raycast/laser originates. Auto-detected if null.")]
+    [Tooltip("The point where the laser beam originates. Auto-detected if unassigned.")]
     public Transform firePoint;
 
-    [Header("--- Target Lock Settings ---")]
-    [Tooltip("Key to lock onto the drone currently aimed at.")]
-    public KeyCode lockKey = KeyCode.E;
+    [Header("--- Tracking Settings ---")]
+    [Tooltip("Rotation speed (degrees per second) when following a locked drone.")]
+    public float trackingSpeed = 100f;
 
-    [Tooltip("Allow locking with Right Mouse Button.")]
-    public bool allowRightClickLock = true;
+    [Tooltip("Maximum pitch angle UP (negative degrees, e.g. -90).")]
+    public float minVerticalAngle = -90f;
 
-    [Tooltip("If true, laser contact can establish lock.")]
-    public bool lockOnLaserTouch = true;
+    [Tooltip("Maximum pitch angle DOWN (positive degrees, e.g. 30).")]
+    public float maxVerticalAngle = 30f;
 
-    [Tooltip("Cooldown period after target destruction before a new lock can be acquired.")]
-    public float postDestructionLockCooldown = 0.5f;
+    [Tooltip("Angle in degrees from aim line to target to break lock when manually steering away.")]
+    public float breakLockAngle = 20f;
 
-    [Tooltip("Maximum distance to acquire a lock.")]
-    public float lockMaxDistance = 150f;
+    [Header("--- Laser Detection Settings ---")]
+    [Tooltip("Radius of the laser beam used for hit detection.")]
+    public float beamHitRadius = 0.5f;
 
-    [Tooltip("Lock detection beam/cone radius.")]
-    public float lockRadius = 1.5f;
+    [Tooltip("Maximum distance the laser can detect a drone.")]
+    public float maxDistance = 150f;
 
-    [Tooltip("Max angle from aim line to snap lock onto a drone when pressing lock button.")]
-    public float lockConeAngle = 25f;
-
-    [Tooltip("Layers to consider when raycasting for a lock.")]
+    [Tooltip("Which physics layers the laser detection ray can hit.")]
     public LayerMask targetLayers = ~0;
 
-    [Header("--- Smooth Tracking Settings ---")]
-    [Tooltip("Smoothing time (seconds) to ease tracking onto the drone. Higher = smoother/softer, Lower = more snappy.")]
-    [Range(0.01f, 0.5f)]
-    public float trackingSmoothTime = 0.1f;
+    // The currently locked drone target (NOT serialized - no manual inspector setup)
+    private GameObject currentTarget = null;
 
-    [Tooltip("Maximum horizontal rotation speed (degrees/sec) when smoothly following the locked drone.")]
-    public float trackingYawSpeed = 120f;
+    /// <summary>True while actively tracking a locked drone target and firing.</summary>
+    public bool IsTracking => currentTarget != null && IsPlayerFiring();
 
-    [Tooltip("Maximum vertical tilt speed (degrees/sec) when smoothly following the locked drone.")]
-    public float trackingPitchSpeed = 80f;
-
-    [Tooltip("Maximum pitch angle UP (negative degrees, e.g. -60).")]
-    public float minVerticalAngle = -60f;
-
-    [Tooltip("Maximum pitch angle DOWN (positive degrees, e.g. 10).")]
-    public float maxVerticalAngle = 10f;
-
-    [Header("--- Laser Integration ---")]
-    [Tooltip("Laser firing is decoupled from Aim Assist. Kept false so Aim Assist never auto-fires.")]
-    public bool autoFireLaser = false;
-
-    [Header("--- Manual Override / Disengage Settings ---")]
-    [Tooltip("Angle in degrees between cannon aim direction and target drone required to break lock when manually steering.")]
-    public float breakLockAngle = 15f;
-
-    [Tooltip("Maximum angle (degrees) from crosshairs before the drone is considered lost/left.")]
-    public float maxTrackingAngle = 30f;
-
-    [Tooltip("Time in seconds the laser can be off the target before Aim Assist disengages.")]
-    public float maxOffTargetDuration = 0.5f;
-
-    [Tooltip("Cooldown period preventing immediate re-lock onto the drone that was just manually abandoned or unlocked.")]
-    public float disengagedTargetCooldown = 1.5f;
-
-    [Header("--- Status (Read Only) ---")]
-    [Tooltip("Whether Aim Assist is currently actively tracking a locked target.")]
-    [SerializeField] private bool isTracking = false;
-
-    [Tooltip("The currently locked target GameObject.")]
-    [SerializeField] private GameObject currentTarget = null;
-
-    [Tooltip("Total count of permanently completed/destroyed targets.")]
-    [SerializeField] private int completedTargetCount = 0;
-
-    // Public properties
-    public bool IsTracking => isTracking;
+    /// <summary>The currently locked drone target GameObject (read only).</summary>
     public GameObject CurrentTarget => currentTarget;
-
-    /// <summary>
-    /// True when AimAssist is in a cooldown period after unlock/disengage/destruction,
-    /// preventing automatic re-lock via lockOnLaserTouch.
-    /// </summary>
-    public bool IsInCooldown => lockCooldownTimer > 0f || disengagedCooldownTimer > 0f;
-
-    // Set of permanently completed/destroyed targets (cannot be re-locked or re-tracked)
-    private readonly HashSet<int> completedTargetIds = new HashSet<int>();
 
     private float currentPitch = 0f;
     private Quaternion initialGunRotation;
-    private float lockCooldownTimer = 0f;
-    private bool hadManualInputLastFrame = false;
-    private GameObject disengagedTarget = null;
-    private float disengagedCooldownTimer = 0f;
-    private float yawVelocity = 0f;
-    private float pitchVelocity = 0f;
-    private float offTargetTimer = 0f;
-    private FinalGame finalGame;
+    private CanonMovement canonMovement;
 
+    /// <summary>
+    /// Captures pristine initial barrel rotation in Awake.
+    /// </summary>
     private void Awake()
     {
-        InitializeReferences();
-    }
+        canonMovement = GetComponent<CanonMovement>() ?? GetComponentInParent<CanonMovement>() ?? GetComponentInChildren<CanonMovement>();
+        if (canonMovement != null)
+        {
+            if (canonBase == null) canonBase = canonMovement.canonBase;
+            if (canonRotate == null) canonRotate = canonMovement.canonRotate;
+            if (firePoint == null) firePoint = canonMovement.firePoint;
+        }
 
-    private void Start()
-    {
         if (canonRotate != null)
         {
             initialGunRotation = canonRotate.localRotation;
         }
+    }
 
-        if (finalGame == null)
+    /// <summary>
+    /// Initializes cannon hierarchy references and links with FinalGame on Start.
+    /// </summary>
+    private void Start()
+    {
+        canonMovement = GetComponent<CanonMovement>() ?? GetComponentInParent<CanonMovement>() ?? GetComponentInChildren<CanonMovement>();
+
+        // Auto-assign references from CanonMovement if not set in Inspector
+        if (canonMovement != null)
         {
-            finalGame = GetComponent<FinalGame>() ?? GetComponentInParent<FinalGame>() ?? GetComponentInChildren<FinalGame>();
+            if (canonBase == null) canonBase = canonMovement.canonBase;
+            if (canonRotate == null) canonRotate = canonMovement.canonRotate;
+            if (firePoint == null) firePoint = canonMovement.firePoint;
+
+            minVerticalAngle = canonMovement.minVerticalAngle;
+            maxVerticalAngle = canonMovement.maxVerticalAngle;
+
+            if (canonMovement.beamHitRadius > 0.05f)
+            {
+                beamHitRadius = canonMovement.beamHitRadius;
+            }
+
+            if (canonMovement.maxDistance > 0f)
+            {
+                maxDistance = canonMovement.maxDistance;
+            }
+
+            targetLayers = canonMovement.hitLayers;
+        }
+
+        // Cache initial barrel rotation
+        if (canonRotate != null)
+        {
+            initialGunRotation = canonRotate.localRotation;
         }
     }
 
+    /// <summary>
+    /// Evaluated every frame:
+    /// - If the player is not firing the laser, aim assist is disabled and any target lock is released.
+    /// - If the player is firing and a target is locked, automatically follows it until destroyed.
+    /// - If the player is firing and no target is locked, checks if the laser points at any drone.
+    /// </summary>
     private void Update()
     {
-        if (lockCooldownTimer > 0f)
+        // Aim assist only works while the player is actively firing the laser
+        if (!IsPlayerFiring())
         {
-            lockCooldownTimer -= Time.deltaTime;
-        }
-
-        if (disengagedCooldownTimer > 0f)
-        {
-            disengagedCooldownTimer -= Time.deltaTime;
-            if (disengagedCooldownTimer <= 0f)
+            if (currentTarget != null)
             {
-                disengagedTarget = null;
+                currentTarget = null;
             }
+            return;
         }
 
-        // 1. Check if we have an active lock
-        if (isTracking && currentTarget != null)
+        // 1. If currently following a drone
+        if (currentTarget != null)
         {
-            // Check if target is destroyed or inactive
-            if (!IsTargetAlive(currentTarget))
+            // If the drone was destroyed or deactivated, stop following
+            if (!IsDroneAlive(currentTarget))
             {
-                OnTargetDestroyed();
+                currentTarget = null;
                 return;
             }
 
-            // If player is not firing (not holding F / Left Mouse), laser is off -> stop everything!
-            if (finalGame != null)
-            {
-                bool isFireHeld = Input.GetKey(finalGame.fireKey) || (finalGame.allowMouseFire && Input.GetMouseButton(0));
-                if (!isFireHeld)
-                {
-                    DisengageLock();
-                    return;
-                }
-            }
-
-            // Allow player to toggle lock off by pressing lock key (E or Right Click)
-            bool lockKeyPressed = Input.GetKeyDown(lockKey) || (allowRightClickLock && Input.GetMouseButtonDown(1));
-            if (lockKeyPressed)
-            {
-                DisengageLock();
-                return;
-            }
-
-            // Automatically follow and maintain aim on the locked drone
-            TrackLockedTarget();
+            // Keep following the drone
+            TrackTarget();
         }
         else
         {
-            // If somehow tracking state was dangling without target, reset everything
-            if (isTracking || yawVelocity != 0f || pitchVelocity != 0f)
-            {
-                isTracking = false;
-                currentTarget = null;
-                yawVelocity = 0f;
-                pitchVelocity = 0f;
-            }
-
-            // 2. Not locked: Listen for user lock input (E or Right Mouse Click)
-            CheckForLockInput();
-        }
-    }
-
-    #region Initialization
-
-    private void InitializeReferences()
-    {
-        // Auto-find canonBase if unassigned
-        if (canonBase == null)
-        {
-            if (transform.name.ToLower().Contains("base"))
-                canonBase = transform;
-            else if (transform.parent != null && transform.parent.name.ToLower().Contains("base"))
-                canonBase = transform.parent;
-            else if (transform.root != null)
-                canonBase = transform.root;
-            else
-                canonBase = transform;
-        }
-
-        // Auto-find canonRotate if unassigned
-        if (canonRotate == null && canonBase != null)
-        {
-            Transform[] children = canonBase.GetComponentsInChildren<Transform>(true);
-            foreach (var child in children)
-            {
-                string lower = child.name.ToLower();
-                if (lower == "gun" || lower.Contains("barrel") || lower.Contains("rotate"))
-                {
-                    canonRotate = child;
-                    break;
-                }
-            }
-        }
-
-        // Auto-find firePoint if unassigned
-        if (firePoint == null && canonBase != null)
-        {
-            Transform[] allChildren = canonBase.GetComponentsInChildren<Transform>(true);
-            foreach (var child in allChildren)
-            {
-                string lower = child.name.ToLower();
-                if (lower == "firepoint" || lower.Contains("muzzle"))
-                {
-                    firePoint = child;
-                    break;
-                }
-            }
-
-            if (firePoint == null)
-            {
-                firePoint = (canonRotate != null) ? canonRotate : transform;
-            }
-        }
-
-        if (finalGame == null)
-        {
-            finalGame = GetComponent<FinalGame>() ?? GetComponentInParent<FinalGame>() ?? GetComponentInChildren<FinalGame>();
-        }
-    }
-
-    #endregion
-
-    #region Target Lock Logic
-
-    /// <summary>
-    /// Checks for user lock input (E key or Right Mouse Click).
-    /// </summary>
-    private void CheckForLockInput()
-    {
-        if (lockCooldownTimer > 0f) return;
-
-        bool lockKeyPressed = Input.GetKeyDown(lockKey) || (allowRightClickLock && Input.GetMouseButtonDown(1));
-
-        if (lockKeyPressed)
-        {
-            // Explicit user lock request overrides disengaged target cooldown
-            disengagedTarget = null;
-            disengagedCooldownTimer = 0f;
-            TryAcquireLockFromAim();
+            // 2. No target currently locked:
+            // Constantly check if the laser ray is pointing at any drone
+            CheckLaserRayHit();
         }
     }
 
     /// <summary>
-    /// Attempts to lock onto a drone directly touched by the crosshair/aim direction.
-    /// Does not auto-snap to nearby drones in a wide cone.
+    /// Checks whether the player is currently firing the laser.
+    /// Aim assist only activates when the laser is actively firing.
     /// </summary>
-    public bool TryAcquireLockFromAim()
+    public bool IsPlayerFiring()
     {
-        if (lockCooldownTimer > 0f) return false;
-        if (firePoint == null) return false;
-
-        Vector3 startPos = firePoint.position;
-        Vector3 direction = firePoint.forward;
-
-        // Perform ray/sphere cast to detect a drone directly touched by the crosshair
-        RaycastHit[] hits = Physics.SphereCastAll(startPos, lockRadius, direction, lockMaxDistance, targetLayers, QueryTriggerInteraction.Ignore);
-        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
-
-        foreach (var hit in hits)
+        if (canonMovement == null)
         {
-            if (hit.collider == null) continue;
-            if (IsPartOfCannon(hit.collider)) continue;
+            canonMovement = GetComponent<CanonMovement>() ?? GetComponentInParent<CanonMovement>() ?? GetComponentInChildren<CanonMovement>();
+        }
 
-            GameObject potentialDrone = ResolveDroneRoot(hit.collider);
-            if (potentialDrone != null && IsTargetAlive(potentialDrone))
+        if (canonMovement != null)
+        {
+            if (canonMovement.IsLaserActive)
             {
-                return TryLockTarget(potentialDrone);
+                return true;
+            }
+
+            bool isKeyHeld = Input.GetKey(canonMovement.fireKey) ||
+                             (canonMovement.allowMouseFire && Input.GetMouseButton(0));
+            if (isKeyHeld) return true;
+        }
+        else
+        {
+            if (Input.GetKey(KeyCode.F) || Input.GetMouseButton(0))
+            {
+                return true;
             }
         }
 
@@ -308,422 +190,213 @@ public class AimAssist : MonoBehaviour
     }
 
     /// <summary>
-    /// Locks onto a specific drone GameObject.
+    /// Casts a ray along the laser direction. If it points at any active drone,
+    /// that drone is automatically locked as the target to follow.
     /// </summary>
-    public bool TryLockTarget(GameObject drone)
+    private void CheckLaserRayHit()
     {
-        if (drone == null) return false;
-        if (lockCooldownTimer > 0f) return false;
+        Transform originTrans = firePoint != null ? firePoint : canonRotate;
+        if (originTrans == null) return;
 
-        // If player recently manually steered away from this drone, do not re-lock until cooldown expires
-        if (drone == disengagedTarget && disengagedCooldownTimer > 0f)
+        Vector3 rayOrigin = originTrans.position;
+        Vector3 rayDirection = originTrans.forward;
+
+        LayerMask mask = canonMovement != null ? canonMovement.hitLayers : targetLayers;
+
+        RaycastHit[] hits = Physics.SphereCastAll(rayOrigin, beamHitRadius, rayDirection, maxDistance, mask, QueryTriggerInteraction.Ignore);
+        Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+
+        for (int i = 0; i < hits.Length; i++)
         {
-            return false;
+            Collider col = hits[i].collider;
+            if (col == null || IsPartOfCannon(col)) continue;
+
+            GameObject drone = ResolveDroneRoot(col);
+            if (drone != null && IsDroneAlive(drone))
+            {
+                TryLockTarget(drone);
+                return;
+            }
         }
-
-        // Target must be alive and active
-        if (!IsTargetAlive(drone))
-        {
-            return false;
-        }
-
-        // Sync initial pitch to avoid sudden jerk when tracking begins
-        if (canonRotate != null)
-        {
-            Quaternion relRot = Quaternion.Inverse(initialGunRotation) * canonRotate.localRotation;
-            Vector3 euler = relRot.eulerAngles;
-            currentPitch = (euler.x > 180f) ? euler.x - 360f : euler.x;
-        }
-
-        // Lock established
-        currentTarget = drone;
-        isTracking = true;
-        hadManualInputLastFrame = false;
-        offTargetTimer = 0f;
-        yawVelocity = 0f;
-        pitchVelocity = 0f;
-
-        Debug.Log($"<color=cyan>[AimAssist] TARGET LOCKED: {drone.name}! Aim Assist activated. Automatic tracking engaged.</color>");
-        return true;
     }
 
-    public void SyncInitialRotation(Quaternion rot)
-    {
-        initialGunRotation = rot;
-    }
-
-    #endregion
-
-    #region Automatic Tracking
- 
     /// <summary>
-    /// Rule 2: Automatically tracks and follows the locked drone.
-    /// Controls base yaw (horizontal) and barrel pitch (vertical) continuously.
-    /// If player provides manual input (WASD / Arrows), manual input takes priority on that axis.
-    /// Aim Assist continues following unpressed axes and auto-firing the laser to destroy the drone.
-    /// As soon as manual input stops, Aim Assist immediately resumes following on both axes.
+    /// Automatically rotates the cannon base (Yaw) and barrel (Pitch) to follow the locked drone.
+    /// Manual input (WASD / Arrows) has priority: steering away breaks the lock.
     /// </summary>
-    private void TrackLockedTarget()
+    private void TrackTarget()
     {
         if (currentTarget == null || canonBase == null || canonRotate == null) return;
 
-        Vector3 targetCenter = currentTarget.transform.position;
-
-        // Try to get center of collider if available
+        // Target position (center of collider if present)
+        Vector3 targetPos = currentTarget.transform.position;
         Collider col = currentTarget.GetComponentInChildren<Collider>();
         if (col != null)
         {
-            targetCenter = col.bounds.center;
+            targetPos = col.bounds.center;
         }
 
-        Vector3 origin = (firePoint != null) ? firePoint.position : canonRotate.position;
-        Vector3 toTarget = targetCenter - origin;
+        Vector3 origin = firePoint != null ? firePoint.position : canonRotate.position;
+        Vector3 toTarget = targetPos - origin;
+        float distance = toTarget.magnitude;
 
-        if (toTarget.sqrMagnitude < 0.01f) return;
+        if (distance < 0.1f) return;
 
-        // Check if player is providing manual movement input (WASD / Arrows)
+        Vector3 toTargetDir = toTarget / distance;
+        Vector3 aimDir = firePoint != null ? firePoint.forward : canonRotate.forward;
+
+        // Manual steering priority: if user actively steers away from the drone, break lock
         bool hasHorizontalInput = Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow) ||
                                   Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow);
 
         bool hasVerticalInput = Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow) ||
                                 Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow);
 
-        bool hasManualInput = hasHorizontalInput || hasVerticalInput;
-
-        Vector3 aimDir = (firePoint != null) ? firePoint.forward : canonRotate.forward;
-        float angleToTarget = Vector3.Angle(aimDir, toTarget);
-
-        // USER INPUT HAS HIGHEST PRIORITY:
-        // If the user provides manual input (WASD / Arrows), manual input immediately takes 100% priority.
-        // If the user steers away from the drone target, immediately break the lock so user has complete freedom!
-        if (hasManualInput)
+        float angleToTarget = Vector3.Angle(aimDir, toTargetDir);
+        if ((hasHorizontalInput || hasVerticalInput) && angleToTarget > breakLockAngle)
         {
-            hadManualInputLastFrame = true;
-
-            if (angleToTarget > breakLockAngle)
-            {
-                DisengageLock();
-                return;
-            }
-        }
-        else
-        {
-            if (hadManualInputLastFrame && angleToTarget > breakLockAngle)
-            {
-                DisengageLock();
-                return;
-            }
-            hadManualInputLastFrame = false;
-        }
-
-        // Check 1: Target behind the cannon or aim direction - NEVER follow from back!
-        Vector3 baseForward = (canonBase != null) ? canonBase.forward : transform.forward;
-        if (Vector3.Dot(baseForward, toTarget) <= 0f || Vector3.Dot(aimDir, toTarget) <= 0f)
-        {
-            DisengageLock();
+            currentTarget = null;
             return;
         }
 
-        // Check 2: Angle to target exceeds maxTrackingAngle (front cone) - automatically unlock!
-        if (angleToTarget > maxTrackingAngle)
-        {
-            DisengageLock();
-            return;
-        }
-
-        // Check 3: Target flew out of combat range
-        if (toTarget.sqrMagnitude > (lockMaxDistance * lockMaxDistance))
-        {
-            DisengageLock();
-            return;
-        }
-
-        // Check 4: Aim Assist only works while the laser is on the drone.
-        // If the laser is not on the drone, Aim Assist must NOT follow the drone!
-        bool isLaserOnDrone = IsLaserHittingTarget(currentTarget);
-        if (!isLaserOnDrone)
-        {
-            yawVelocity = 0f;
-            pitchVelocity = 0f;
-
-            offTargetTimer += Time.deltaTime;
-            if (offTargetTimer >= maxOffTargetDuration)
-            {
-                DisengageLock();
-                return;
-            }
-
-            // Do not follow this frame because laser is not on the drone!
-            return;
-        }
-
-        offTargetTimer = 0f;
-
-        // --- 1. Horizontal Base Yaw Rotation (Smooth Tracing) ---
-        // If player gives horizontal input, player input takes priority (AimAssist doesn't force yaw)
+        // 1. Horizontal Base Yaw Rotation (only if user is not pressing A/D)
         if (!hasHorizontalInput)
         {
-            Vector3 flatDir = toTarget;
-            flatDir.y = 0f;
+            Vector3 aimFlat = firePoint.forward;
+            aimFlat.y = 0f;
+            Vector3 targetFlat = toTarget;
+            targetFlat.y = 0f;
 
-            if (flatDir.sqrMagnitude > 0.001f)
+            if (aimFlat.sqrMagnitude > 0.001f && targetFlat.sqrMagnitude > 0.001f)
             {
-                float targetYaw = Quaternion.LookRotation(flatDir.normalized, Vector3.up).eulerAngles.y;
-                float currentYaw = canonBase.eulerAngles.y;
-                float newYaw = Mathf.SmoothDampAngle(currentYaw, targetYaw, ref yawVelocity, trackingSmoothTime, trackingYawSpeed, Time.deltaTime);
-                Vector3 baseEuler = canonBase.eulerAngles;
-                canonBase.rotation = Quaternion.Euler(baseEuler.x, newYaw, baseEuler.z);
+                float yawDelta = Vector3.SignedAngle(aimFlat.normalized, targetFlat.normalized, Vector3.up);
+                float yawStep = Mathf.MoveTowards(0f, yawDelta, trackingSpeed * Time.deltaTime);
+                canonBase.Rotate(Vector3.up, yawStep, Space.World);
             }
         }
-        else
-        {
-            yawVelocity = 0f;
-        }
 
-        // --- 2. Vertical Barrel Pitch Tilt (Smooth Tracing) ---
-        // If player gives vertical input, player input takes priority (AimAssist doesn't force pitch)
+        // 2. Vertical Barrel Pitch Tilt (only if user is not pressing W/S)
         if (!hasVerticalInput)
         {
-            Vector3 localDir = canonBase.InverseTransformDirection(toTarget.normalized);
-            float horizontalDistance = Mathf.Sqrt(localDir.x * localDir.x + localDir.z * localDir.z);
+            // Measure actual target elevation vs current laser beam elevation
+            float horizontalDistance = Mathf.Sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+            float targetElevation = Mathf.Atan2(toTarget.y, horizontalDistance) * Mathf.Rad2Deg;
 
-            // Calculate pitch angle (negative is pitch up in CanonMovement/FinalGame)
-            float targetPitch = -Mathf.Atan2(localDir.y, horizontalDistance) * Mathf.Rad2Deg;
-            targetPitch = Mathf.Clamp(targetPitch, minVerticalAngle, maxVerticalAngle);
+            float aimHorizontalDist = Mathf.Sqrt(firePoint.forward.x * firePoint.forward.x + firePoint.forward.z * firePoint.forward.z);
+            float currentElevation = Mathf.Atan2(firePoint.forward.y, Mathf.Max(0.001f, aimHorizontalDist)) * Mathf.Rad2Deg;
 
-            currentPitch = Mathf.SmoothDamp(currentPitch, targetPitch, ref pitchVelocity, trackingSmoothTime, trackingPitchSpeed, Time.deltaTime);
+            // Difference: positive means laser is too low and needs to tilt UP
+            float elevationError = targetElevation - currentElevation;
+
+            // In FinalGame: decreasing currentPitch tilts UP, increasing tilts DOWN
+            float pitchStep = Mathf.MoveTowards(0f, elevationError, trackingSpeed * Time.deltaTime);
+            currentPitch -= pitchStep;
             currentPitch = Mathf.Clamp(currentPitch, minVerticalAngle, maxVerticalAngle);
+
             canonRotate.localRotation = initialGunRotation * Quaternion.Euler(currentPitch, 0f, 0f);
 
-            if (finalGame != null)
+            if (canonMovement != null)
             {
-                finalGame.SyncPitch(currentPitch);
+                canonMovement.SyncPitch(currentPitch);
             }
         }
         else
         {
-            pitchVelocity = 0f;
-        }
-    }
-
-    /// <summary>
-    /// Disengages the target lock when the player manually steers the cannon/laser away from the drone.
-    /// Clears tracking and target, sets cooldowns to prevent snap-back, and stops auto-laser if fire key is not held.
-    /// </summary>
-    public void DisengageLock()
-    {
-        if (!isTracking && currentTarget == null) return;
-
-        GameObject abandonedTarget = currentTarget;
-        currentTarget = null;
-        isTracking = false;
-        hadManualInputLastFrame = false;
-        offTargetTimer = 0f;
-        yawVelocity = 0f;
-        pitchVelocity = 0f;
-
-        // Prevent immediate re-locking onto the drone player just abandoned
-        disengagedTarget = abandonedTarget;
-        disengagedCooldownTimer = disengagedTargetCooldown;
-        lockCooldownTimer = 1.0f;
-
-        // If player is not holding fire key (F or Left Click), turn off laser
-        if (finalGame != null)
-        {
-            bool isFireHeld = Input.GetKey(finalGame.fireKey) || (finalGame.allowMouseFire && Input.GetMouseButton(0));
-            if (!isFireHeld)
+            // Sync current pitch from FinalGame when player provides manual pitch input
+            if (canonMovement != null)
             {
-                finalGame.StopLaser();
+                currentPitch = canonMovement.CurrentPitch;
             }
-            finalGame.SyncPitch(currentPitch);
         }
-
-        Debug.Log("<color=yellow>[AimAssist] Manual override: Player steered away from target. Lock disengaged.</color>");
     }
 
     /// <summary>
-    /// Checks whether the cannon aim/laser currently touches or intersects the target drone.
+    /// Locks onto the specified drone target and starts automatic following.
     /// </summary>
-    public bool IsLaserHittingTarget(GameObject target)
+    /// <param name="drone">The drone GameObject to lock onto.</param>
+    /// <returns>True if the lock was successfully established.</returns>
+    public bool TryLockTarget(GameObject drone)
     {
-        if (target == null) return false;
-        Transform originTrans = (firePoint != null) ? firePoint : canonRotate;
-        if (originTrans == null && canonBase != null) originTrans = canonBase;
-        if (originTrans == null) originTrans = transform;
+        if (!IsPlayerFiring()) return false;
+        if (drone == null || !IsDroneAlive(drone)) return false;
 
-        Vector3 origin = originTrans.position;
-        Vector3 dir = originTrans.forward;
-
-        // 1. Raycast check
-        RaycastHit[] hits = Physics.RaycastAll(origin, dir, lockMaxDistance, targetLayers, QueryTriggerInteraction.Ignore);
-        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
-        foreach (var hit in hits)
+        currentTarget = drone;
+        if (canonMovement != null)
         {
-            if (hit.collider == null || IsPartOfCannon(hit.collider)) continue;
-            GameObject root = ResolveDroneRoot(hit.collider);
-            if (root == target || hit.collider.gameObject == target || hit.collider.transform.IsChildOf(target.transform) || target.transform.IsChildOf(hit.collider.transform)) return true;
-            break; // Hit something else in front
+            currentPitch = canonMovement.CurrentPitch;
         }
-
-        // 2. SphereCast check (with laser beam thickness)
-        RaycastHit[] sHits = Physics.SphereCastAll(origin, lockRadius, dir, lockMaxDistance, targetLayers, QueryTriggerInteraction.Ignore);
-        System.Array.Sort(sHits, (a, b) => a.distance.CompareTo(b.distance));
-        foreach (var hit in sHits)
-        {
-            if (hit.collider == null || IsPartOfCannon(hit.collider)) continue;
-            GameObject root = ResolveDroneRoot(hit.collider);
-            if (root == target || hit.collider.gameObject == target || hit.collider.transform.IsChildOf(target.transform) || target.transform.IsChildOf(hit.collider.transform)) return true;
-            break; // Hit something else
-        }
-
-        return false;
+        Debug.Log($"<color=cyan>[AimAssist] Laser locked on drone: {drone.name}. Following target.</color>");
+        return true;
     }
 
     /// <summary>
-    /// Syncs current pitch angle when player adjusts pitch via manual controls.
+    /// Checks whether a drone GameObject is currently active and alive.
     /// </summary>
-    public void SyncPitch(float pitch)
+    public bool IsDroneAlive(GameObject drone)
     {
-        currentPitch = pitch;
-    }
+        if (drone == null || !drone.activeInHierarchy) return false;
 
-    #endregion
-
-    #region Target Destruction & Post-Destruction
-
-    /// <summary>
-    /// Rule 3 & 4: Called immediately when the locked drone is destroyed.
-    /// Stops tracking, deactivates Aim Assist, and marks target as permanently completed.
-    /// </summary>
-    public void OnTargetDestroyed()
-    {
-        GameObject destroyed = currentTarget;
-        if (destroyed != null)
+        DroneHealth health = drone.GetComponent<DroneHealth>() ?? drone.GetComponentInChildren<DroneHealth>();
+        if (health != null && (health.IsDestroyed || health.health <= 0f))
         {
-            int id = destroyed.GetHashCode();
-            completedTargetIds.Add(id);
-            completedTargetCount = completedTargetIds.Count;
-
-            Debug.Log($"<color=yellow>[AimAssist] Target {destroyed.name} DESTROYED! Aim Assist deactivated. Target permanently completed.</color>");
+            return false;
         }
-
-        // Immediately stop tracking
-        isTracking = false;
-        currentTarget = null;
-        hadManualInputLastFrame = false;
-        offTargetTimer = 0f;
-        disengagedTarget = null;
-        disengagedCooldownTimer = 0f;
-        yawVelocity = 0f;
-        pitchVelocity = 0f;
-
-        // Set cooldown so no accidental auto-lock or frame-overlap lock can occur
-        lockCooldownTimer = postDestructionLockCooldown;
-
-        // Turn off laser, require fire button release, and sync pitch with manual controller
-        if (finalGame != null)
-        {
-            finalGame.OnTargetDroneDestroyed(destroyed);
-            finalGame.SyncPitch(currentPitch);
-        }
-
-        // Rule 4: System must NOT automatically acquire another drone
-    }
-
-    /// <summary>
-    /// Checks if a drone target is alive and active.
-    /// </summary>
-    private bool IsTargetAlive(GameObject targetObj)
-    {
-        if (targetObj == null) return false;
-        if (!targetObj.activeInHierarchy) return false;
-
-        DroneHealth health = targetObj.GetComponent<DroneHealth>() ?? targetObj.GetComponentInChildren<DroneHealth>() ?? targetObj.GetComponentInParent<DroneHealth>();
-        if (health != null && (health.IsDestroyed || health.health <= 0f)) return false;
 
         return true;
     }
 
-    #endregion
-
-    #region Helpers
-
     /// <summary>
-    /// Resolves the root GameObject of a drone from a collider.
+    /// Resolves the root GameObject of a drone from any of its child colliders.
     /// </summary>
-    private GameObject ResolveDroneRoot(Collider hitCol)
+    public GameObject ResolveDroneRoot(Collider col)
     {
-        if (hitCol == null) return null;
+        if (col == null) return null;
 
-        MonoBehaviour[] comps = hitCol.GetComponentsInParent<MonoBehaviour>(true);
-        foreach (var c in comps)
+        // 1. Tag check
+        if (col.CompareTag("Drone")) return col.gameObject;
+        if (col.transform.root != null && col.transform.root.CompareTag("Drone")) return col.transform.root.gameObject;
+
+        // 2. Drone components check
+        DroneHealth health = col.GetComponentInParent<DroneHealth>();
+        if (health != null) return health.gameObject;
+
+        DroneNPCFollowTarget follow = col.GetComponentInParent<DroneNPCFollowTarget>();
+        if (follow != null) return follow.gameObject;
+
+        FlightControlSystem fcs = col.GetComponentInParent<FlightControlSystem>();
+        if (fcs != null) return fcs.gameObject;
+
+        // 3. Rigidbody check
+        if (col.attachedRigidbody != null)
         {
-            if (c == null) continue;
-            string tName = c.GetType().Name;
-            if (tName == "FlightControlSystem" || tName == "DroneHardware" ||
-                tName == "DroneBrain" || tName == "DroneNPCFollowTarget" || tName == "DroneHealth")
+            string rbName = col.attachedRigidbody.name.ToLower();
+            if (rbName.Contains("drone") || rbName.Contains("tactical"))
             {
-                return c.gameObject;
+                return col.attachedRigidbody.gameObject;
             }
         }
 
-        string n = hitCol.name.ToLower();
-        string rn = hitCol.transform.root.name.ToLower();
-        if (n.Contains("drone") || rn.Contains("drone") || n.Contains("tactical") || rn.Contains("tactical"))
+        // 4. Name check
+        string rootName = col.transform.root.name.ToLower();
+        string colName = col.name.ToLower();
+        if (rootName.Contains("drone") || rootName.Contains("tactical") || colName.Contains("drone"))
         {
-            return hitCol.transform.root.gameObject;
+            return col.transform.root.gameObject;
         }
 
         return null;
     }
 
+    /// <summary>
+    /// Checks whether a collider is part of the cannon structure to prevent self-collision.
+    /// </summary>
     private bool IsPartOfCannon(Collider col)
     {
         if (col == null) return false;
+        if (col.transform.IsChildOf(transform)) return true;
         if (canonBase != null && (col.transform == canonBase || col.transform.IsChildOf(canonBase))) return true;
+        if (canonRotate != null && (col.transform == canonRotate || col.transform.IsChildOf(canonRotate))) return true;
         if (transform.root != null && col.transform.root == transform.root) return true;
         return false;
     }
-
-    /// <summary>
-    /// Collects all active drones from DroneDirector or scene.
-    /// </summary>
-    private List<GameObject> GetAllActiveDrones()
-    {
-        List<GameObject> list = new List<GameObject>();
-
-        if (DroneDirector.Instance != null && DroneDirector.Instance.squad != null)
-        {
-            for (int i = 0; i < DroneDirector.Instance.squad.Count; i++)
-            {
-                var entry = DroneDirector.Instance.squad[i];
-                if (entry != null && entry.droneObject != null && entry.droneObject.activeInHierarchy)
-                {
-                    list.Add(entry.droneObject);
-                }
-            }
-        }
-
-        // Fallback: search MonoBehaviours in scene if DroneDirector squad is empty
-        if (list.Count == 0)
-        {
-            MonoBehaviour[] allScripts = FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Exclude);
-            foreach (var s in allScripts)
-            {
-                if (s == null) continue;
-                string sName = s.GetType().Name;
-                if (sName == "FlightControlSystem" || sName == "DroneBrain" || sName == "DroneHealth")
-                {
-                    if (s.gameObject.activeInHierarchy && !list.Contains(s.gameObject))
-                    {
-                        list.Add(s.gameObject);
-                    }
-                }
-            }
-        }
-
-        return list;
-    }
-
-    #endregion
 }

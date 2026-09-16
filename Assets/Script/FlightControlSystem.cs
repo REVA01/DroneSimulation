@@ -97,7 +97,9 @@ public class FlightControlSystem : MonoBehaviour
     private AltitudeController altitudeController;
     private VelocityMode velocityMode;
 
-    // Initializes hardware references, physics mass, and cascade controllers.
+    /// <summary>
+    /// Initializes hardware references, physics mass, hover calibration, and cascading controllers.
+    /// </summary>
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
@@ -108,10 +110,12 @@ public class FlightControlSystem : MonoBehaviour
         if (droneInputs == null)
             droneInputs = GetComponent<DroneInputs>();
 
-        rb.mass = droneHardware.mass;
+        if (droneHardware != null && rb != null)
+        {
+            rb.mass = droneHardware.mass;
+        }
 
-        hoverForce = rb.mass * Physics.gravity.magnitude;
-        hoverThrottle = Mathf.Clamp01(hoverForce / (maxMotorForce * 4f));
+        RecalculateHoverParameters();
 
         velocityController = new VelocityToAngleController(
             velocityKp, velocityKi, velocityKd,
@@ -148,7 +152,19 @@ public class FlightControlSystem : MonoBehaviour
         );
     }
 
-    // Updates drone flight state and executes motor mixing each physics step.
+    /// <summary>
+    /// Recalculates hover force and normalized throttle required to balance gravity.
+    /// </summary>
+    public void RecalculateHoverParameters()
+    {
+        float droneMass = (rb != null) ? rb.mass : 1f;
+        hoverForce = droneMass * Physics.gravity.magnitude;
+        hoverThrottle = Mathf.Clamp01(hoverForce / Mathf.Max(maxMotorForce * 4f, 0.001f));
+    }
+
+    /// <summary>
+    /// Updates flight state, executes cascading PID controllers, and applies motor forces each physics step.
+    /// </summary>
     private void FixedUpdate()
     {
         if (droneHardware == null || droneInputs == null || velocityMode == null || rb == null)
@@ -158,7 +174,7 @@ public class FlightControlSystem : MonoBehaviour
 
         Vector3 localVelocity = transform.InverseTransformDirection(rb.linearVelocity);
         Vector3 localAngularVelocity = transform.InverseTransformDirection(rb.angularVelocity) * Mathf.Rad2Deg;
-        Vector3 rotation = NormalizeAngles(transform.localEulerAngles);
+        Vector3 rotation = NormalizeAngles(transform.eulerAngles);
 
         DroneState state = new DroneState
         {
@@ -189,7 +205,11 @@ public class FlightControlSystem : MonoBehaviour
         ApplyMotorMixing(finalThrottle, corrections);
     }
 
-    // Mixes throttle and rate corrections into individual motor forces.
+    /// <summary>
+    /// Distributes total throttle and attitude rate corrections across 4 quadcopter motors with saturation scaling.
+    /// </summary>
+    /// <param name="throttle">Normalized throttle value [0, 1].</param>
+    /// <param name="correction">Angular rate correction vector (pitch, yaw, roll).</param>
     private void ApplyMotorMixing(float throttle, Vector3 correction)
     {
         float baseMotorForce = throttle * maxMotorForce;
@@ -230,7 +250,9 @@ public class FlightControlSystem : MonoBehaviour
         droneHardware.ApplyMotorForces(fl, fr, bl, br);
     }
 
-    // Resets all cascading PID controllers.
+    /// <summary>
+    /// Resets all cascaded PID loops (velocity, attitude, angular rates, altitude) to initial state.
+    /// </summary>
     public void ResetControllers()
     {
         if (velocityMode != null)
@@ -238,9 +260,15 @@ public class FlightControlSystem : MonoBehaviour
 
         if (rateController != null)
             rateController.Reset();
+
+        RecalculateHoverParameters();
     }
 
-    // Normalizes Euler angles to the -180 to 180 degree range.
+    /// <summary>
+    /// Wraps Euler angle values into the signed [-180, 180] degree range for continuous attitude control.
+    /// </summary>
+    /// <param name="angles">Euler angles in degrees [0, 360].</param>
+    /// <returns>Signed Euler angles in degrees [-180, 180].</returns>
     private Vector3 NormalizeAngles(Vector3 angles)
     {
         if (angles.x > 180f) angles.x -= 360f;
@@ -249,7 +277,9 @@ public class FlightControlSystem : MonoBehaviour
         return angles;
     }
 
-    // Resets controllers when the component is disabled.
+    /// <summary>
+    /// Cleans up controller states when the flight control component is disabled.
+    /// </summary>
     private void OnDisable()
     {
         ResetControllers();

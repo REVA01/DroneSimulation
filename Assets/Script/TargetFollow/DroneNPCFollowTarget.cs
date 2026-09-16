@@ -48,7 +48,38 @@ public class DroneNPCFollowTarget : MonoBehaviour
     private float _avoidCommitTimer;
     private bool _isAvoiding;
     private DroneHealth _droneHealth;
+    private Rigidbody _rb;
 
+    /// <summary>
+    /// Caches the Rigidbody and forces AI control mode on DroneInputs to prevent key conflicts with cannon controls.
+    /// </summary>
+    private void Awake()
+    {
+        _rb = GetComponent<Rigidbody>();
+        if (_rb != null)
+        {
+            _rb.useGravity = false;
+            _rb.isKinematic = true;
+        }
+
+        // Ensure this NPC drone does not capture manual player keyboard inputs (WASD)
+        DroneInputs inputs = GetComponent<DroneInputs>();
+        if (inputs != null)
+        {
+            inputs.isAIControlled = true;
+        }
+
+        // If FlightControlSystem is on this same drone, disable it so its motor mixing does not fight NPC waypoint navigation
+        FlightControlSystem fcs = GetComponent<FlightControlSystem>();
+        if (fcs != null && enabled)
+        {
+            fcs.enabled = false;
+        }
+    }
+
+    /// <summary>
+    /// Validates initial target lock requirements on startup.
+    /// </summary>
     private void Start()
     {
         // If targetBox is explicitly an FDrone, enforce target lock
@@ -58,7 +89,9 @@ public class DroneNPCFollowTarget : MonoBehaviour
         }
     }
 
-    // Steers the drone toward its target with obstacle avoidance.
+    /// <summary>
+    /// Evaluates target validity, lock state, distance limits, and steers the drone towards the target with obstacle avoidance.
+    /// </summary>
     private void Update()
     {
         // 1. Target existence alone should never make the drone start following if lock is required
@@ -92,10 +125,15 @@ public class DroneNPCFollowTarget : MonoBehaviour
             return;
         }
 
+        // Smooth stop deceleration when approaching stop distance to eliminate 1-frame jitter
         if (distance <= stopDistance)
         {
-            _currentMoveDir = Vector3.zero;
-            return;
+            _currentMoveDir = Vector3.Lerp(_currentMoveDir, Vector3.zero, 10f * Time.deltaTime);
+            if (_currentMoveDir.sqrMagnitude < 0.001f)
+            {
+                _currentMoveDir = Vector3.zero;
+                return;
+            }
         }
 
         Vector3 desiredDir = toTarget.normalized;
@@ -128,18 +166,30 @@ public class DroneNPCFollowTarget : MonoBehaviour
         {
             _droneHealth = GetComponent<DroneHealth>() ?? GetComponentInParent<DroneHealth>() ?? GetComponentInChildren<DroneHealth>();
         }
-        if (_droneHealth != null && _droneHealth.IsTakingDamage)
+
+        // Apply 30% speed reduction exclusively to the exact drone targeted by the laser; all others fly at 100% normal speed
+        if (_droneHealth != null && _droneHealth.IsTargetedByLaser)
         {
-            effectiveSpeed *= _droneHealth.damageSlowdownMultiplier;
+            effectiveSpeed *= 0.70f;
         }
 
-        float moveAmount = Mathf.Min(effectiveSpeed * Time.deltaTime, distance - stopDistance);
-        transform.Translate(_currentMoveDir * moveAmount, Space.World);
+        float moveAmount = Mathf.Min(effectiveSpeed * Time.deltaTime, Mathf.Max(0f, distance - stopDistance));
+        if (moveAmount > 0.0001f)
+        {
+            transform.Translate(_currentMoveDir * moveAmount, Space.World);
+        }
+
+        if (_rb != null && !_rb.isKinematic)
+        {
+            _rb.linearVelocity = _currentMoveDir * effectiveSpeed;
+        }
 
         ApplyFlightRotation(_currentMoveDir);
     }
 
-    // Resets active avoidance commitment and timer.
+    /// <summary>
+    /// Resets active obstacle avoidance commitment direction and timer.
+    /// </summary>
     public void ResetAvoidance()
     {
         _isAvoiding = false;
@@ -147,7 +197,10 @@ public class DroneNPCFollowTarget : MonoBehaviour
         _committedAvoidDir = Vector3.zero;
     }
 
-    // Rotates the drone toward movement direction with aerodynamic banking.
+    /// <summary>
+    /// Smoothly rotates the drone towards its travel direction with aerodynamic banking (roll into turn).
+    /// </summary>
+    /// <param name="direction">World space movement velocity vector.</param>
     private void ApplyFlightRotation(Vector3 direction)
     {
         if (direction.sqrMagnitude < 0.001f)
@@ -170,7 +223,11 @@ public class DroneNPCFollowTarget : MonoBehaviour
         );
     }
 
-    // Determines an unobstructed steering direction using raycasts.
+    /// <summary>
+    /// Evaluates raycast candidates to determine an unobstructed flight path towards the target.
+    /// </summary>
+    /// <param name="desiredDir">Direct unblocked line-of-sight direction vector.</param>
+    /// <returns>Clear candidate direction vector or Vector3.zero if all are blocked.</returns>
     private Vector3 GetSafeDirection(Vector3 desiredDir)
     {
         Vector3 rayOrigin = transform.position + Vector3.up * rayHeight;
@@ -209,7 +266,12 @@ public class DroneNPCFollowTarget : MonoBehaviour
         return Vector3.zero;
     }
 
-    // Checks if an obstacle raycast hits valid environmental geometry.
+    /// <summary>
+    /// Casts an obstacle detection ray checking for environmental colliders excluding self and ignored peers.
+    /// </summary>
+    /// <param name="origin">World raycast origin point.</param>
+    /// <param name="direction">World raycast heading direction.</param>
+    /// <returns>True if blocked by valid obstacle geometry.</returns>
     private bool IsRayBlocked(Vector3 origin, Vector3 direction)
     {
         int hitCount = Physics.RaycastNonAlloc(
@@ -235,7 +297,11 @@ public class DroneNPCFollowTarget : MonoBehaviour
         return false;
     }
 
-    // Generates alternative avoidance vectors across yaw and pitch angles.
+    /// <summary>
+    /// Generates fan array of candidate avoidance headings angled across pitch and yaw offsets.
+    /// </summary>
+    /// <param name="desiredDir">Base forward heading direction.</param>
+    /// <returns>Array of candidate direction unit vectors.</returns>
     private Vector3[] BuildCandidateDirections(Vector3 desiredDir)
     {
         Vector3 rightAxis = Vector3.Cross(Vector3.up, desiredDir);

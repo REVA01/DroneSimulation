@@ -1,5 +1,7 @@
 using UnityEngine;
 
+namespace CanonLegacy
+{
 public class CanonMovement : MonoBehaviour
 {
     [Header("Cannon References")]
@@ -68,4 +70,5 @@ public class CanonMovement : MonoBehaviour
             canonRotate.localRotation = initialGunRotation * Quaternion.Euler(currentPitch, 0f, 0f);
         }
     }
+}
 }

@@ -93,41 +93,10 @@ public class DroneBrain : MonoBehaviour
             float distanceScale = Mathf.Clamp(distanceToWaypoint / 3.0f, 1.0f, maxSpeed / Mathf.Max(baseSpeed, 0.1f));
             targetSpeed = Mathf.Min(baseSpeed * distanceScale, maxSpeed);
         }
-        else if (distanceToWaypoint < director.arrivalSlowdownDistance && director.currentPhase != CombatPhase.CoordinatedAttack)
-        {
-            float t = Mathf.Clamp01(distanceToWaypoint / Mathf.Max(director.arrivalSlowdownDistance, 0.01f));
-            targetSpeed = Mathf.Lerp(director.minCombatSpeed, baseSpeed, t);
-        }
-
-        bool peerIsLagging = false;
-        for (int i = 0; i < director.squad.Count; i++)
-        {
-            DroneDirector.DroneSquadMember peer = director.squad[i];
-            if (peer == null || peer == member || peer.droneObject == null || !peer.droneObject.activeInHierarchy || peer.tacticalWaypoint == null)
-                continue;
-
-            float peerDist = Vector3.Distance(peer.droneObject.transform.position, peer.tacticalWaypoint.position);
-            if (peerDist > distanceToWaypoint + 3.0f)
-            {
-                peerIsLagging = true;
-                break;
-            }
-        }
-
-        if (peerIsLagging && distanceToWaypoint < 1.0f && director.currentPhase == CombatPhase.FollowTarget)
-        {
-            targetSpeed = baseSpeed * 0.75f;
-        }
-
-        // Apply slowdown if this drone is currently taking damage
-        DroneHealth droneHealth = member.droneObject != null ? member.droneObject.GetComponent<DroneHealth>() : null;
-        if (droneHealth != null && droneHealth.IsTakingDamage)
-        {
-            targetSpeed *= droneHealth.damageSlowdownMultiplier;
-        }
 
         currentFlightSpeed = Mathf.MoveTowards(member.followTarget.moveSpeed, targetSpeed, acceleration * dt);
         member.followTarget.moveSpeed = currentFlightSpeed;
+
         isConnectedWithSquad = distanceToCentroid < 25.0f;
     }
 
@@ -234,18 +203,24 @@ public class DroneDirector : MonoBehaviour
     [Header("Obstacle Awareness")]
     public LayerMask obstacleLayers = -1;
 
-    [Header("Drone Spawner")]
-    public GameObject dronePrefab;
+    [Header("Drone Spawn System")]
+    [SerializeField] private DroneSpanSystem droneSpanSystem;
+    public DroneSpanSystem DroneSpanSystem { get => droneSpanSystem; set => droneSpanSystem = value; }
 
-    [Range(2, 6)]
-    public int droneCount = 2;
-    public float spawnRadius = 6f;
-    public float spawnHeight = 2.5f;
-    public bool spawnOnStart = true;
+    public int droneCount
+    {
+        get => droneSpanSystem != null ? droneSpanSystem.DroneCount : squad.Count;
+        set
+        {
+            if (droneSpanSystem != null) droneSpanSystem.DroneCount = value;
+            lastSpawnedCount = value;
+        }
+    }
 
     [Header("Active Squad Data (Read Only)")]
     public List<DroneSquadMember> squad = new List<DroneSquadMember>();
 
+    public int LastSpawnedCount { get => lastSpawnedCount; set => lastSpawnedCount = value; }
     private int lastSpawnedCount = -1;
     private int formationCycleCount = 0;
     private TacticalFormationProfile lastFormationProfile;
@@ -290,6 +265,23 @@ public class DroneDirector : MonoBehaviour
     private void Awake()
     {
         Instance = this;
+        EnsureSpanSystemConnection();
+    }
+
+    /// <summary>
+    /// Ensures the two-way serialized connection between DroneDirector and DroneSpanSystem.
+    /// </summary>
+    public void EnsureSpanSystemConnection()
+    {
+        if (droneSpanSystem == null)
+        {
+            droneSpanSystem = GetComponent<DroneSpanSystem>() ?? FindAnyObjectByType<DroneSpanSystem>();
+        }
+
+        if (droneSpanSystem != null && droneSpanSystem.DroneDirector == null)
+        {
+            droneSpanSystem.DroneDirector = this;
+        }
     }
 
     // Finds the initial target and initializes squad drones.
@@ -304,7 +296,17 @@ public class DroneDirector : MonoBehaviour
             lastKnownTargetForward = target.forward;
         }
 
-        if (spawnOnStart)
+        EnsureSpanSystemConnection();
+
+        if (droneSpanSystem != null)
+        {
+            if (droneSpanSystem.SpawnOnStart && squad.Count == 0)
+            {
+                droneSpanSystem.SpawnDrones();
+            }
+            lastSpawnedCount = droneSpanSystem.DroneCount;
+        }
+        else if (squad.Count == 0)
         {
             SpawnDrones();
         }
@@ -320,6 +322,14 @@ public class DroneDirector : MonoBehaviour
                     squad[i].brain = brain;
                 }
                 squad[i].brain.Initialize(this, squad[i]);
+            }
+
+            if (squad[i] != null && squad[i].droneObject != null)
+            {
+                DroneHealth health = squad[i].droneObject.GetComponent<DroneHealth>();
+                if (health == null) health = squad[i].droneObject.AddComponent<DroneHealth>();
+                health.damageSlowdownMultiplier = 0.70f;
+                health.SetLaserTargeted(false);
             }
 
             if (squad[i] != null && squad[i].followTarget != null)
@@ -347,7 +357,8 @@ public class DroneDirector : MonoBehaviour
             FindTargetSafely();
         }
 
-        if (droneCount != lastSpawnedCount && droneCount > 0)
+        int targetCount = droneSpanSystem != null ? droneSpanSystem.DroneCount : squad.Count;
+        if (targetCount != lastSpawnedCount && targetCount > 0)
         {
             SpawnDrones();
         }
@@ -1480,39 +1491,45 @@ public class DroneDirector : MonoBehaviour
     [ContextMenu("Spawn Drones")]
     public void SpawnDrones()
     {
+        EnsureSpanSystemConnection();
+        if (droneSpanSystem != null)
+        {
+            droneSpanSystem.SpawnDrones();
+            lastSpawnedCount = droneSpanSystem.DroneCount;
+            return;
+        }
+
         ClearDrones();
 
-        GameObject template = dronePrefab;
-        if (template == null)
-        {
-            DroneHardware existing = FindAnyObjectByType<DroneHardware>();
-            if (existing != null) template = existing.gameObject;
-        }
+        GameObject template = null;
+        DroneHardware existing = FindAnyObjectByType<DroneHardware>(FindObjectsInactive.Include);
+        if (existing != null) template = existing.gameObject;
 
         if (template == null)
         {
             return;
         }
 
-        lastSpawnedCount = droneCount;
+        // If template is an active scene object, hide it so it only serves as an intact master template
+        if (template.scene.name != null && template.activeSelf)
+        {
+            template.SetActive(false);
+        }
+
+        float radius = 6f;
+        float height = 2.5f;
+        int count = 2;
+        lastSpawnedCount = count;
         Vector3 centerPos = transform.position;
 
-        for (int i = 0; i < droneCount; i++)
+        for (int i = 0; i < count; i++)
         {
-            float angle = (i / (float)droneCount) * Mathf.PI * 2f;
-            Vector3 offset = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * spawnRadius;
-            Vector3 spawnPos = centerPos + offset + Vector3.up * spawnHeight;
+            float angle = (i / (float)count) * Mathf.PI * 2f;
+            Vector3 offset = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
+            Vector3 spawnPos = centerPos + offset + Vector3.up * height;
 
-            GameObject droneObj;
-            if (template.scene.name != null && i == 0 && template.activeInHierarchy)
-            {
-                droneObj = template;
-                droneObj.transform.position = spawnPos;
-            }
-            else
-            {
-                droneObj = Instantiate(template, spawnPos, Quaternion.identity);
-            }
+            GameObject droneObj = Instantiate(template, spawnPos, Quaternion.identity);
+            droneObj.SetActive(true);
 
             GameObject waypointObj = new GameObject($"TacticalWaypoint_{i + 1}");
             waypointObj.transform.position = spawnPos;
@@ -1531,10 +1548,10 @@ public class DroneDirector : MonoBehaviour
             followTarget.requireTargetLock = false;
 
             FlightControlSystem fcs = droneObj.GetComponent<FlightControlSystem>();
-            if (fcs != null) fcs.enabled = true;
+            if (fcs != null) fcs.enabled = false;
 
             DroneHardware dh = droneObj.GetComponent<DroneHardware>();
-            if (dh != null) dh.enabled = true;
+            if (dh != null) dh.enabled = false;
 
             DroneInputs inputs = droneObj.GetComponent<DroneInputs>();
             if (inputs != null) inputs.isAIControlled = true;
@@ -1544,6 +1561,14 @@ public class DroneDirector : MonoBehaviour
             {
                 brain = droneObj.AddComponent<DroneBrain>();
             }
+
+            DroneHealth health = droneObj.GetComponent<DroneHealth>();
+            if (health == null)
+            {
+                health = droneObj.AddComponent<DroneHealth>();
+            }
+            health.damageSlowdownMultiplier = 0.70f;
+            health.SetLaserTargeted(false);
 
             DroneTacticalRole assignedRole = (i == 0) ? DroneTacticalRole.Distractor : DroneTacticalRole.Flanker;
             droneObj.name = $"TacticalDrone_{i + 1}_{assignedRole}";
@@ -1569,7 +1594,7 @@ public class DroneDirector : MonoBehaviour
     }
 
     // Configures obstacle avoidance on each drone to ignore squadmates and target.
-    private void WireIgnoredColliders()
+    public void WireIgnoredColliders()
     {
         List<Collider> targetCols = new List<Collider>();
         if (target != null)

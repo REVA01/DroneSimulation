@@ -435,9 +435,9 @@ MonoBehaviour:
   followDistance: 10
   followHeight: 5
   followFormationSpacing: 4
-  followSpeed: 6.5
-  maxFollowSpeed: 11
-  followAcceleration: 7
+  followSpeed: 10
+  maxFollowSpeed: 12
+  followAcceleration: 10
   followFormation: 0
   randomizeFollowFormation: 1
   chaseMode: 1
@@ -1019,8 +1019,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1, y: 0.2, z: 1}
-  m_Center: {x: 0, y: 0, z: 0}
+  m_Size: {x: 1.1147287, y: 0.14486942, z: 0.9069667}
+  m_Center: {x: 0.004232168, y: -0.027565286, z: -0.011895895}
 --- !u!114 &2064981997
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2802,7 +2802,7 @@ MonoBehaviour:
   minVerticalAngle: -90
   maxVerticalAngle: 30
   breakLockAngle: 20
-  beamHitRadius: 0.5
+  beamHitRadius: 0.35
   maxDistance: 150
   targetLayers:
     serializedVersion: 2

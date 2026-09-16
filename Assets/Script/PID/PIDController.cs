@@ -1,5 +1,8 @@
 using UnityEngine;
 
+/// <summary>
+/// General-purpose discrete PID controller with derivative low-pass filtering and anti-windup clamping.
+/// </summary>
 public class PIDController
 {
     private readonly float kp;
@@ -16,7 +19,14 @@ public class PIDController
     private float filteredDerivative;
     private bool hasPreviousError;
 
-    // Initializes PID gains and saturation limits.
+    /// <summary>
+    /// Constructs a PIDController instance with specific gains and saturation bounds.
+    /// </summary>
+    /// <param name="kp">Proportional gain coefficient.</param>
+    /// <param name="ki">Integral gain coefficient.</param>
+    /// <param name="kd">Derivative gain coefficient.</param>
+    /// <param name="integralLimit">Maximum absolute accumulation limit for the integrator.</param>
+    /// <param name="outputLimit">Maximum absolute command output saturation limit.</param>
     public PIDController(float kp, float ki, float kd, float integralLimit, float outputLimit)
     {
         this.kp = kp;
@@ -26,7 +36,12 @@ public class PIDController
         this.outputLimit = outputLimit;
     }
 
-    // Computes the filtered PID output for a given error and time delta.
+    /// <summary>
+    /// Computes the control output based on current tracking error and timestep.
+    /// </summary>
+    /// <param name="error">Difference between setpoint target and current state.</param>
+    /// <param name="dt">Time step delta in seconds.</param>
+    /// <returns>Clamped control actuation command.</returns>
     public float Compute(float error, float dt)
     {
         if (dt <= 0f)
@@ -38,10 +53,12 @@ public class PIDController
 
         float pTerm = kp * error;
 
+        // Integral accumulation with saturation clamp
         integral += error * dt;
         integral = Mathf.Clamp(integral, -integralLimit, integralLimit);
         float iTerm = ki * integral;
 
+        // Filtered derivative calculation
         float rawDerivative = hasPreviousError ? (error - previousError) / dt : 0f;
         filteredDerivative = Mathf.Lerp(filteredDerivative, rawDerivative, DerivativeFilterAlpha);
         float dTerm = kd * filteredDerivative;
@@ -52,7 +69,8 @@ public class PIDController
         float output = pTerm + iTerm + dTerm;
         float clampedOutput = Mathf.Clamp(output, -outputLimit, outputLimit);
 
-        if (!Mathf.Approximately(output, clampedOutput))
+        // Anti-windup clamping: only adjust integrator if integral gain is active
+        if (!Mathf.Approximately(output, clampedOutput) && Mathf.Abs(ki) > 0.0001f)
         {
             bool sameSign = (output > 0f && error > 0f) || (output < 0f && error < 0f);
             if (sameSign)
@@ -64,7 +82,9 @@ public class PIDController
         return clampedOutput;
     }
 
-    // Resets the integral and derivative state.
+    /// <summary>
+    /// Clears internal integrator accumulation and derivative state history.
+    /// </summary>
     public void Reset()
     {
         integral = 0f;

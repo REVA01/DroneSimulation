@@ -1,5 +1,8 @@
 using UnityEngine;
 
+/// <summary>
+/// Top-level outer cascaded flight controller converting horizontal velocity commands into target tilt angles with active braking.
+/// </summary>
 public class VelocityToAngleController
 {
     private readonly PIDController rollPID;
@@ -11,7 +14,21 @@ public class VelocityToAngleController
     private Vector2 previousAngles;
     private bool hasPreviousAngles;
 
-    // Initializes horizontal velocity-to-angle PID controllers and limits.
+    /// <summary>
+    /// Initializes velocity-to-attitude PID controllers, maximum tilt bounds, and deceleration parameters.
+    /// </summary>
+    /// <param name="rollKp">Roll velocity proportional gain.</param>
+    /// <param name="rollKi">Roll velocity integral gain.</param>
+    /// <param name="rollKd">Roll velocity derivative gain.</param>
+    /// <param name="pitchKp">Pitch velocity proportional gain.</param>
+    /// <param name="pitchKi">Pitch velocity integral gain.</param>
+    /// <param name="pitchKd">Pitch velocity derivative gain.</param>
+    /// <param name="integralLimit">Integrator saturation limit.</param>
+    /// <param name="outputLimit">Maximum angle command limit.</param>
+    /// <param name="maxTilt">Hard maximum tilt angle in degrees.</param>
+    /// <param name="maxTiltRate">Maximum rate of tilt angle change in deg/s.</param>
+    /// <param name="brakingDeadband">Speed threshold below which active counter-tilt transitions to level hover.</param>
+    /// <param name="maxBrakingSpeed">Speed at which maximum counter-tilt deceleration is applied.</param>
     public VelocityToAngleController(
         float rollKp,
         float rollKi,
@@ -35,7 +52,14 @@ public class VelocityToAngleController
         this.maxBrakingSpeed = Mathf.Max(0.1f, maxBrakingSpeed);
     }
 
-    // Computes target tilt angles from horizontal velocity errors.
+    /// <summary>
+    /// Computes target roll and pitch angles required to track demanded horizontal velocity.
+    /// Applies active aerodynamic counter-tilt braking when user stick commands are released.
+    /// </summary>
+    /// <param name="targetVelocity">Demanded lateral and forward velocities (m/s).</param>
+    /// <param name="currentVelocity">Current lateral and forward velocities (m/s).</param>
+    /// <param name="dt">Physics timestep in seconds.</param>
+    /// <returns>Vector2 containing demanded (rollAngle, pitchAngle) in degrees.</returns>
     public Vector2 GetTargetAngles(Vector2 targetVelocity, Vector2 currentVelocity, float dt)
     {
         if (dt <= 0f)
@@ -106,7 +130,9 @@ public class VelocityToAngleController
         return targetAngles;
     }
 
-    // Resets the velocity PID controllers and angle history.
+    /// <summary>
+    /// Resets PID internal states and stored angle history.
+    /// </summary>
     public void Reset()
     {
         rollPID.Reset();
