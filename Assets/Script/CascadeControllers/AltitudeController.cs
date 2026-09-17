@@ -47,6 +47,11 @@ public class AltitudeController
     /// <returns>Normalized throttle value between 0 and 1.</returns>
     public float GetThrottle(float inputThrottle, float currentVelocityY, float upDot, float dt)
     {
+        if (float.IsNaN(inputThrottle) || float.IsInfinity(inputThrottle)) inputThrottle = 0f;
+        if (float.IsNaN(currentVelocityY) || float.IsInfinity(currentVelocityY)) currentVelocityY = 0f;
+        if (float.IsNaN(upDot) || float.IsInfinity(upDot)) upDot = 1f;
+        if (dt <= 0f || float.IsNaN(dt)) dt = 0.02f;
+
         float targetVelocityY = inputThrottle * maxClimbSpeed;
         float error = targetVelocityY - currentVelocityY;
         float correctionForce = altitudePID.Compute(error, dt);

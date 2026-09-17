@@ -467,7 +467,7 @@ MonoBehaviour:
   timeBetweenCannonAttacks: 0.25
   cannonDamagePerAttack: 25
   cannonMaxHealth: 100
-  droneMaxHealth: 100
+  droneMaxHealth: 500
   attackDistance: 2.5
   minAttackRange: 2
   maxAttackRange: 14
@@ -1323,6 +1323,10 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 4294967295
   isFormationComplete: 0
+  laserDetectionRadius: 6
+  laserAvoidanceStrength: 8
+  laserAvoidanceDistance: 6
+  laserAvoidanceResponseTime: 0.19
 --- !u!1 &2087707173
 GameObject:
   m_ObjectHideFlags: 0

@@ -578,32 +578,6 @@ public class DroneNPCFollowTarget : MonoBehaviour
     }
 
     /// <summary>
-    /// Smoothly rotates the drone towards its travel direction with aerodynamic banking (roll into turn).
-    /// </summary>
-    /// <param name="direction">World space movement velocity vector.</param>
-    private void ApplyFlightRotation(Vector3 direction)
-    {
-        if (direction.sqrMagnitude < 0.001f)
-            return;
-
-        Vector3 upReference = Mathf.Abs(Vector3.Dot(direction, Vector3.up)) > 0.99f
-            ? transform.forward
-            : Vector3.up;
-
-        Quaternion lookRotation = Quaternion.LookRotation(direction, upReference);
-
-        float yawDelta = Vector3.SignedAngle(transform.forward, direction, Vector3.up);
-        float bankAngle = Mathf.Clamp(-yawDelta * bankAmount, -maxBankAngle, maxBankAngle);
-        Quaternion bankRotation = Quaternion.AngleAxis(bankAngle, Vector3.forward);
-
-        transform.rotation = Quaternion.Slerp(
-            transform.rotation,
-            lookRotation * bankRotation,
-            rotationSpeed * Time.deltaTime
-        );
-    }
-
-    /// <summary>
     /// Evaluates raycast candidates to determine an unobstructed flight path towards the target.
     /// </summary>
     /// <param name="desiredDir">Direct unblocked line-of-sight direction vector.</param>

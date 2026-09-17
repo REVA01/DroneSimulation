@@ -267,12 +267,19 @@ public class FlightControlSystem : MonoBehaviour
         if (droneHardware == null || droneInputs == null || velocityMode == null || rb == null)
             return;
 
+        float dt = Time.fixedDeltaTime;
+        if (dt <= 0f || float.IsNaN(dt)) dt = 0.02f;
+
         SyncControllerParameters();
 
-        float dt = Time.fixedDeltaTime;
+        Vector3 rawLinVel = rb.linearVelocity;
+        if (float.IsNaN(rawLinVel.x) || float.IsNaN(rawLinVel.y) || float.IsNaN(rawLinVel.z)) rawLinVel = Vector3.zero;
 
-        Vector3 localVelocity = transform.InverseTransformDirection(rb.linearVelocity);
-        Vector3 localAngularVelocity = transform.InverseTransformDirection(rb.angularVelocity) * Mathf.Rad2Deg;
+        Vector3 rawAngVel = rb.angularVelocity;
+        if (float.IsNaN(rawAngVel.x) || float.IsNaN(rawAngVel.y) || float.IsNaN(rawAngVel.z)) rawAngVel = Vector3.zero;
+
+        Vector3 localVelocity = transform.InverseTransformDirection(rawLinVel);
+        Vector3 localAngularVelocity = transform.InverseTransformDirection(rawAngVel) * Mathf.Rad2Deg;
         Vector3 rotation = NormalizeAngles(transform.eulerAngles);
 
         DroneState state = new DroneState
@@ -372,10 +379,11 @@ public class FlightControlSystem : MonoBehaviour
     /// <returns>Signed Euler angles in degrees [-180, 180].</returns>
     private Vector3 NormalizeAngles(Vector3 angles)
     {
-        if (angles.x > 180f) angles.x -= 360f;
-        if (angles.y > 180f) angles.y -= 360f;
-        if (angles.z > 180f) angles.z -= 360f;
-        return angles;
+        return new Vector3(
+            Mathf.DeltaAngle(0f, angles.x),
+            Mathf.DeltaAngle(0f, angles.y),
+            Mathf.DeltaAngle(0f, angles.z)
+        );
     }
 
     /// <summary>

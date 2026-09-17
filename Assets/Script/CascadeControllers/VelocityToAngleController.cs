@@ -64,7 +64,12 @@ public class VelocityToAngleController
     /// <returns>Vector2 containing demanded (rollAngle, pitchAngle) in degrees.</returns>
     public Vector2 GetTargetAngles(Vector2 targetVelocity, Vector2 currentVelocity, float dt)
     {
-        if (dt <= 0f)
+        if (float.IsNaN(targetVelocity.x) || float.IsInfinity(targetVelocity.x)) targetVelocity.x = 0f;
+        if (float.IsNaN(targetVelocity.y) || float.IsInfinity(targetVelocity.y)) targetVelocity.y = 0f;
+        if (float.IsNaN(currentVelocity.x) || float.IsInfinity(currentVelocity.x)) currentVelocity.x = 0f;
+        if (float.IsNaN(currentVelocity.y) || float.IsInfinity(currentVelocity.y)) currentVelocity.y = 0f;
+
+        if (dt <= 0f || float.IsNaN(dt))
             return hasPreviousAngles ? previousAngles : Vector2.zero;
 
         float rollAngle;

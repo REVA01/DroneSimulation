@@ -614,11 +614,6 @@ public class DroneBrain : MonoBehaviour
         }
     }
 
-    private void StartAttack()
-    {
-        // Attack execution is driven authoritatively by DroneDirector squad coordination
-    }
-
     /// <summary>
     /// Resets attack flags. Individual attack interval timing is handled by nextAttackTime.
     /// </summary>
@@ -1569,17 +1564,13 @@ public class DroneDirector : MonoBehaviour
             FindTargetSafely();
         }
 
-        int targetCount = droneSpanSystem != null ? droneSpanSystem.DroneCount : squad.Count;
-        if (targetCount != lastSpawnedCount && targetCount > 0)
+        if (droneSpanSystem != null)
         {
-            lastSpawnedCount = targetCount;
-            if (droneSpanSystem != null)
+            int targetCount = droneSpanSystem.DroneCount;
+            if (targetCount != lastSpawnedCount && targetCount > 0)
             {
+                lastSpawnedCount = targetCount;
                 droneSpanSystem.SyncToTargetCount();
-            }
-            else
-            {
-                SpawnDrones();
             }
         }
 

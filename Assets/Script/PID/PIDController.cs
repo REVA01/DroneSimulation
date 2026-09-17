@@ -56,7 +56,12 @@ public class PIDController
     /// <returns>Clamped control actuation command.</returns>
     public float Compute(float error, float dt)
     {
-        if (dt <= 0f)
+        if (float.IsNaN(error) || float.IsInfinity(error))
+        {
+            return 0f;
+        }
+
+        if (float.IsNaN(dt) || dt <= 0f)
         {
             return Mathf.Clamp(kp * error, -outputLimit, outputLimit);
         }
