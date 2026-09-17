@@ -64,6 +64,19 @@ public class DroneNPCFollowTarget : MonoBehaviour
     [Tooltip("True once both position and rotation tolerances are satisfied.")]
     public bool isFormationComplete = false;
 
+    [Header("Laser Beam Avoidance")]
+    [Tooltip("Distance threshold around the laser beam where the drone begins evasive maneuvers.")]
+    public float laserDetectionRadius = 5.0f;
+
+    [Tooltip("Multiplier determining how strongly the drone maneuvers away from the laser beam.")]
+    public float laserAvoidanceStrength = 2.0f;
+
+    [Tooltip("Desired safe buffer distance the drone attempts to establish away from the beam axis.")]
+    public float laserAvoidanceDistance = 4.0f;
+
+    [Tooltip("Smoothing time (seconds) to blend avoidance maneuvers and avoid jitter or abrupt jerking.")]
+    public float laserAvoidanceResponseTime = 0.25f;
+
     private readonly RaycastHit[] _hitBuffer = new RaycastHit[16];
     private Vector3 _currentMoveDir;
     private Vector3 _committedAvoidDir;
@@ -74,6 +87,9 @@ public class DroneNPCFollowTarget : MonoBehaviour
     private DroneInputs _droneInputs;
     private FlightControlSystem _fcs;
     private DroneHardware _droneHardware;
+    private CanonMovement _canonMovement;
+    private float _currentLaserThreat = 0f;
+    private Vector3 _currentLaserAvoidDir = Vector3.zero;
 
     /// <summary>
     /// Configures Rigidbody for physics simulation and connects DroneInputs, FlightControlSystem, and DroneHardware.
@@ -101,6 +117,8 @@ public class DroneNPCFollowTarget : MonoBehaviour
         if (_droneHardware == null)
             _droneHardware = gameObject.AddComponent<DroneHardware>();
         _droneHardware.enabled = true;
+
+        _canonMovement = FindAnyObjectByType<CanonMovement>();
     }
 
     /// <summary>
@@ -180,10 +198,58 @@ public class DroneNPCFollowTarget : MonoBehaviour
             return;
         }
 
+        // 4. Laser Beam Threat Detection & Evasion Smoothing
+        bool hasLaserThreat = TryCalculateLaserThreat(out Vector3 targetLaserAvoidDir, out float targetLaserThreat);
+        float responseRate = 1f / Mathf.Max(laserAvoidanceResponseTime, 0.05f);
+
+        if (hasLaserThreat)
+        {
+            _currentLaserThreat = Mathf.MoveTowards(_currentLaserThreat, targetLaserThreat, responseRate * Time.deltaTime);
+            if (_currentLaserAvoidDir.sqrMagnitude < 0.001f)
+            {
+                _currentLaserAvoidDir = targetLaserAvoidDir;
+            }
+            else
+            {
+                _currentLaserAvoidDir = Vector3.Slerp(_currentLaserAvoidDir, targetLaserAvoidDir, responseRate * 2.5f * Time.deltaTime).normalized;
+            }
+        }
+        else
+        {
+            _currentLaserThreat = Mathf.MoveTowards(_currentLaserThreat, 0f, responseRate * Time.deltaTime);
+            if (_currentLaserThreat <= 0.001f)
+            {
+                _currentLaserThreat = 0f;
+                _currentLaserAvoidDir = Vector3.zero;
+            }
+        }
+
+        float effectiveSpeed = moveSpeed;
+        if (_droneHealth == null)
+        {
+            _droneHealth = GetComponent<DroneHealth>() ?? GetComponentInParent<DroneHealth>() ?? GetComponentInChildren<DroneHealth>();
+        }
+
+        // Apply 30% speed reduction exclusively to the exact drone targeted by the laser; all others fly at 100% normal speed
+        if (_droneHealth != null && _droneHealth.IsTargetedByLaser)
+        {
+            effectiveSpeed *= 0.70f;
+        }
+
+        float maxSpeed = (_fcs != null && _fcs.maxForwardSpeed > 0f) ? _fcs.maxForwardSpeed : Mathf.Max(moveSpeed, 10f);
+        float cruiseSpeedFactor = Mathf.Clamp01(effectiveSpeed / maxSpeed);
+
         float driveFactor = 0f;
         if (distance > stopDistance)
         {
             Vector3 desiredDir = toTarget.normalized;
+
+            // Blend laser avoidance into desired movement intent
+            if (_currentLaserThreat > 0.01f && _currentLaserAvoidDir.sqrMagnitude > 0.001f)
+            {
+                Vector3 avoidOffset = _currentLaserAvoidDir * (_currentLaserThreat * laserAvoidanceStrength);
+                desiredDir = (desiredDir + avoidOffset).normalized;
+            }
 
             float forwardDot = Vector3.Dot(transform.forward, desiredDir);
             bool waypointBehind = forwardDot < 0f && distance < rayDistance * 2f;
@@ -208,31 +274,42 @@ public class DroneNPCFollowTarget : MonoBehaviour
                 _currentMoveDir = Vector3.Slerp(_currentMoveDir, safeDir, blendSpeed * Time.deltaTime).normalized;
             }
 
-            float effectiveSpeed = moveSpeed;
-            if (_droneHealth == null)
-            {
-                _droneHealth = GetComponent<DroneHealth>() ?? GetComponentInParent<DroneHealth>() ?? GetComponentInChildren<DroneHealth>();
-            }
-
-            // Apply 30% speed reduction exclusively to the exact drone targeted by the laser; all others fly at 100% normal speed
-            if (_droneHealth != null && _droneHealth.IsTargetedByLaser)
-            {
-                effectiveSpeed *= 0.70f;
-            }
-
-            // Dynamic speed and arrival modulation
-            float maxSpeed = (_fcs != null && _fcs.maxForwardSpeed > 0f) ? _fcs.maxForwardSpeed : Mathf.Max(moveSpeed, 10f);
-            float cruiseSpeedFactor = Mathf.Clamp01(effectiveSpeed / maxSpeed);
             float arrivalFactor = Mathf.Clamp01((distance - stopDistance) / Mathf.Max(stopDistance * 1.5f, 1.5f));
+            if (_currentLaserThreat > 0.01f)
+            {
+                arrivalFactor = Mathf.Max(arrivalFactor, _currentLaserThreat);
+            }
             driveFactor = cruiseSpeedFactor * arrivalFactor;
         }
         else
         {
-            _currentMoveDir = Vector3.zero;
+            // Within stopDistance: if under laser threat, actively glide away from the beam
+            if (_currentLaserThreat > 0.01f && _currentLaserAvoidDir.sqrMagnitude > 0.001f)
+            {
+                Vector3 safeDir = GetSafeDirection(_currentLaserAvoidDir);
+                if (safeDir.sqrMagnitude < 0.001f)
+                    safeDir = _currentLaserAvoidDir;
+
+                if (_currentMoveDir.sqrMagnitude < 0.001f)
+                {
+                    _currentMoveDir = safeDir;
+                }
+                else
+                {
+                    _currentMoveDir = Vector3.Slerp(_currentMoveDir, safeDir, steeringSmoothSpeed * Time.deltaTime).normalized;
+                }
+
+                driveFactor = cruiseSpeedFactor * Mathf.Clamp01(_currentLaserThreat * Mathf.Max(laserAvoidanceStrength * 0.5f, 0.5f));
+            }
+            else
+            {
+                _currentMoveDir = Vector3.zero;
+                driveFactor = 0f;
+            }
         }
 
         // Transform world-space avoidance direction into drone local frame for cyclic control (Pitch & Roll)
-        Vector3 localDir = (distance <= stopDistance || _currentMoveDir.sqrMagnitude < 0.001f)
+        Vector3 localDir = (_currentMoveDir.sqrMagnitude < 0.001f || driveFactor < 0.001f)
             ? Vector3.zero
             : transform.InverseTransformDirection(_currentMoveDir);
         float pitch = Mathf.Clamp(localDir.z * driveFactor, -1f, 1f);
@@ -244,6 +321,33 @@ public class DroneNPCFollowTarget : MonoBehaviour
         if (Mathf.Abs(altitudeDelta) > 0.15f)
         {
             throttle = Mathf.Clamp(altitudeDelta / 2.0f, -1f, 1f);
+        }
+
+        // Blend vertical evasion into throttle if avoiding upward
+        if (_currentLaserThreat > 0.01f && _currentLaserAvoidDir.y > 0.05f)
+        {
+            throttle = Mathf.Clamp(throttle + _currentLaserAvoidDir.y * _currentLaserThreat * 0.6f, -1f, 1f);
+        }
+
+        // Continuous ground clearance protection
+        if (minGroundClearance > 0.05f)
+        {
+            Vector3 rayOrigin = transform.position + Vector3.up * 0.5f;
+            if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit groundHit, minGroundClearance + 2.0f, groundCheckLayers, QueryTriggerInteraction.Ignore))
+            {
+                if (groundHit.collider != null &&
+                    groundHit.collider.GetComponentInParent<FlightControlSystem>() == null &&
+                    groundHit.collider.GetComponentInParent<DroneNPCFollowTarget>() == null)
+                {
+                    float currentClearance = transform.position.y - groundHit.point.y;
+                    if (currentClearance < minGroundClearance)
+                    {
+                        float clearanceDeficit = minGroundClearance - currentClearance;
+                        float climbUrgency = Mathf.Clamp01(0.6f + (clearanceDeficit / minGroundClearance) * 0.4f);
+                        throttle = Mathf.Max(throttle, climbUrgency);
+                    }
+                }
+            }
         }
 
         // Heading / Yaw alignment: orient drone nose toward the target
@@ -469,6 +573,8 @@ public class DroneNPCFollowTarget : MonoBehaviour
         _isAvoiding = false;
         _avoidCommitTimer = 0f;
         _committedAvoidDir = Vector3.zero;
+        _currentLaserThreat = 0f;
+        _currentLaserAvoidDir = Vector3.zero;
     }
 
     /// <summary>
@@ -602,6 +708,157 @@ public class DroneNPCFollowTarget : MonoBehaviour
     }
 
     /// <summary>
+    /// Evaluates user cannon laser beam proximity, calculating an optimal evasive heading away from the beam.
+    /// </summary>
+    /// <param name="avoidDir">Safe world-space unit vector directing the drone away from the laser beam.</param>
+    /// <param name="threatFactor">Normalized threat urgency from 0.0 (safe) to 1.0 (direct danger).</param>
+    /// <returns>True if the drone is within laser detection radius of an active laser beam.</returns>
+    private bool TryCalculateLaserThreat(out Vector3 avoidDir, out float threatFactor)
+    {
+        avoidDir = Vector3.zero;
+        threatFactor = 0f;
+
+        if (_canonMovement == null)
+        {
+            _canonMovement = FindAnyObjectByType<CanonMovement>();
+            if (_canonMovement == null) return false;
+        }
+
+        if (!_canonMovement.IsLaserActive || _canonMovement.firePoint == null)
+            return false;
+
+        Vector3 beamStart = _canonMovement.firePoint.position;
+        Vector3 beamDir = _canonMovement.firePoint.forward;
+        float beamLength = _canonMovement.maxDistance > 0f ? _canonMovement.maxDistance : 100f;
+
+        if (_canonMovement.lineRenderer != null && _canonMovement.lineRenderer.enabled && _canonMovement.lineRenderer.positionCount >= 2)
+        {
+            Vector3 endPt = _canonMovement.lineRenderer.useWorldSpace
+                ? _canonMovement.lineRenderer.GetPosition(1)
+                : _canonMovement.lineRenderer.transform.TransformPoint(_canonMovement.lineRenderer.GetPosition(1));
+            float measuredLength = Vector3.Distance(beamStart, endPt);
+            if (measuredLength > 0.1f)
+            {
+                beamLength = measuredLength;
+            }
+        }
+
+        Vector3 dronePos = transform.position;
+        Vector3 toDrone = dronePos - beamStart;
+        float projection = Vector3.Dot(toDrone, beamDir);
+
+        // If drone is behind the cannon nozzle, the laser is not a threat
+        if (projection < -0.5f) return false;
+
+        float maxRange = Mathf.Max(laserDetectionRadius, laserAvoidanceDistance);
+        if (maxRange <= 0.01f) maxRange = 5.0f;
+
+        // If drone is beyond the beam reach plus detection margin
+        if (projection > beamLength + maxRange) return false;
+
+        float clampedProj = Mathf.Clamp(projection, 0f, beamLength);
+        Vector3 closestPointOnBeam = beamStart + beamDir * clampedProj;
+        Vector3 fromBeam = dronePos - closestPointOnBeam;
+        float distToBeam = fromBeam.magnitude;
+
+        if (distToBeam > maxRange) return false;
+
+        float safeBuffer = Mathf.Min(laserDetectionRadius, laserAvoidanceDistance);
+        if (safeBuffer <= 0.01f) safeBuffer = maxRange * 0.8f;
+
+        if (distToBeam < safeBuffer)
+        {
+            threatFactor = 1.0f - 0.5f * (distToBeam / safeBuffer);
+        }
+        else
+        {
+            float t = (distToBeam - safeBuffer) / Mathf.Max(maxRange - safeBuffer, 0.01f);
+            threatFactor = 0.5f * (1.0f - t);
+        }
+        threatFactor = Mathf.Clamp01(threatFactor);
+
+        // Calculate evasion direction
+        Vector3 escapeDir;
+        if (distToBeam > 0.08f)
+        {
+            escapeDir = fromBeam / distToBeam;
+        }
+        else
+        {
+            // Laser is pointing directly at drone center - choose lateral escape aligned with current velocity
+            Vector3 lateral = Vector3.Cross(beamDir, Vector3.up);
+            if (lateral.sqrMagnitude < 0.001f)
+            {
+                lateral = Vector3.Cross(beamDir, Vector3.right);
+            }
+            lateral.Normalize();
+
+            Vector3 currentVel = _rb != null ? _rb.linearVelocity : Vector3.zero;
+            if (Vector3.Dot(currentVel, lateral) < 0f)
+            {
+                lateral = -lateral;
+            }
+            escapeDir = lateral;
+        }
+
+        // Keep evasion mostly horizontal to preserve flight stability and roll control
+        escapeDir.y = Mathf.Clamp(escapeDir.y, -0.2f, 0.4f);
+        if (escapeDir.sqrMagnitude > 0.001f)
+        {
+            escapeDir.Normalize();
+        }
+        else
+        {
+            escapeDir = transform.right;
+        }
+
+        // Ground clearance protection: if close to ground, prevent downward evasion
+        Vector3 rayOrigin = dronePos + Vector3.up * 0.5f;
+        float checkDist = minGroundClearance > 0.05f ? (minGroundClearance + 2.0f) : 3.0f;
+        if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit groundHit, checkDist, groundCheckLayers, QueryTriggerInteraction.Ignore))
+        {
+            if (groundHit.collider != null &&
+                groundHit.collider.GetComponentInParent<FlightControlSystem>() == null &&
+                groundHit.collider.GetComponentInParent<DroneNPCFollowTarget>() == null)
+            {
+                float currentAlt = dronePos.y - groundHit.point.y;
+                if (currentAlt < (minGroundClearance + 1.0f) && escapeDir.y < 0.15f)
+                {
+                    escapeDir.y = 0.25f;
+                    escapeDir.Normalize();
+                }
+            }
+        }
+
+        // Obstacle avoidance for evasion direction
+        Vector3 obsRayOrigin = dronePos + Vector3.up * rayHeight;
+        if (IsRayBlocked(obsRayOrigin, escapeDir))
+        {
+            // Try lateral reflection or opposite horizontal
+            Vector3 altDir = Vector3.Reflect(escapeDir, beamDir);
+            altDir.y = Mathf.Clamp(altDir.y, 0f, 0.4f);
+            altDir.Normalize();
+
+            if (!IsRayBlocked(obsRayOrigin, altDir))
+            {
+                escapeDir = altDir;
+            }
+            else
+            {
+                // Try upward diagonal
+                Vector3 upDir = (escapeDir + Vector3.up * 0.7f).normalized;
+                if (!IsRayBlocked(obsRayOrigin, upDir))
+                {
+                    escapeDir = upDir;
+                }
+            }
+        }
+
+        avoidDir = escapeDir;
+        return threatFactor > 0.01f;
+    }
+
+    /// <summary>
     /// Checks whether target exists, is active in hierarchy, and is alive.
     /// </summary>
     public bool IsTargetValid(Transform target)
@@ -647,6 +904,8 @@ public class DroneNPCFollowTarget : MonoBehaviour
         _committedAvoidDir = Vector3.zero;
         _avoidCommitTimer = 0f;
         _isAvoiding = false;
+        _currentLaserThreat = 0f;
+        _currentLaserAvoidDir = Vector3.zero;
 
         if (_droneInputs != null)
         {
