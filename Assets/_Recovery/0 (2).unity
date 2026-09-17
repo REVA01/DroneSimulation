@@ -432,18 +432,18 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::DroneDirector
   maxForwardSpeed: 25
   maxSideSpeed: 20
-  maxTiltAngle: 30
+  maxTiltAngle: 45
   maxMotorForce: 10
   droneMass: 1
   linearDamping: 0.2
   angularDamping: 1
-  cruiseSpeed: 8
-  approachSpeed: 8
+  cruiseSpeed: 10
+  approachSpeed: 10
   attackSpeed: 4
   disengageSpeed: 5.5
-  acceleration: 8
+  acceleration: 10
   stopDistance: 1.5
-  brakingDistance: 3
+  brakingDistance: 4
   turnSpeed: 6
   maxYawRate: 90
   maxPitchRate: 100
@@ -460,7 +460,7 @@ MonoBehaviour:
   detectionRange: 50
   engagementDistance: 15
   targetSwitchingInterval: 5
-  aimAccuracy: 0.9
+  aimAccuracy: 0.6
   attackDistance: 2.5
   minAttackRange: 2
   maxAttackRange: 14
@@ -501,7 +501,7 @@ MonoBehaviour:
   retreatDurationRange: {x: 2, y: 3.2}
   autoSelectFormationByCount: 1
   finalFormationType: 0
-  formationSpacing: 4
+  formationSpacing: 2
   vAngle: 70
   vForwardSpacing: 2.5
   vSideSpacing: 3
@@ -517,7 +517,7 @@ MonoBehaviour:
   formationSpeed: 8
   formationDecelerationDistance: 3
   finalAlignmentStrength: 1.6
-  formationTimeout: 12
+  formationTimeout: 1
   cinematicHoldDuration: 0.1
   currentPhase: 5
   currentCombatFormation: 0
@@ -534,11 +534,11 @@ MonoBehaviour:
   chaseMode: 1
   obstacleCheckDistance: 4
   formationsBeforeAttack: 7
-  surroundFormationDuration: 2
+  surroundFormationDuration: 1
   currentFormationStep: 1
   formationTransitionSpeed: 8
-  radialTransitionSpeed: 3.5
-  verticalTransitionSpeed: 2.5
+  radialTransitionSpeed: 3
+  verticalTransitionSpeed: 2
   spreadDuration: 2
   distractDuration: 4
   attackDuration: 3.5
@@ -547,7 +547,7 @@ MonoBehaviour:
   currentAttackPattern: 1
   formationSyncTimeTolerance: 0.5
   minTravelSpeed: 5
-  maxTravelSpeed: 7.5
+  maxTravelSpeed: 10
   isMissionComplete: 0
   OnMissionComplete:
     m_PersistentCalls:
@@ -555,7 +555,7 @@ MonoBehaviour:
   obstacleLayers:
     serializedVersion: 2
     m_Bits: 4294967295
-  droneSpanSystem: {fileID: 0}
+  droneSpanSystem: {fileID: 393614899}
 --- !u!4 &393614898
 Transform:
   m_ObjectHideFlags: 0
@@ -585,12 +585,12 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::DroneSpanSystem
   droneDirector: {fileID: 393614897}
   dronePrefab: {fileID: 2064981992}
-  droneCount: 11
-  spawnRadius: 6
-  spawnHeight: 2.5
+  droneCount: 6
+  spawnRadius: 2
+  spawnHeight: 3
   spawnOnStart: 1
   spawnMode: 0
-  sequentialSpawnDelay: 0.5
+  sequentialSpawnDelay: 2
   minSpawnDistance: 2.5
   autoRespawn: 1
   respawnDelay: 1

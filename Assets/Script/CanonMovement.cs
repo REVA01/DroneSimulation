@@ -71,6 +71,8 @@ public class CanonMovement : MonoBehaviour
     private float currentPitch = 0f;
     private Quaternion initialGunRotation;
     private float laserTimer = 0f;
+    private float cannonAttackCooldownTimer = 0f;
+    private int lastDamagedFrame = -1;
 
     public float CurrentPitch => currentPitch;
     public bool IsLaserActive => (lineRenderer != null && lineRenderer.enabled) ||
@@ -155,8 +157,21 @@ public class CanonMovement : MonoBehaviour
     /// </summary>
     private void Update()
     {
+        if (cannonAttackCooldownTimer > 0f)
+        {
+            cannonAttackCooldownTimer -= Time.deltaTime;
+        }
+
         HandleCannonMovement();
         HandleLaserFiring();
+    }
+
+    /// <summary>
+    /// Shuts down the laser beam and clears target tracking when the cannon is disabled or destroyed.
+    /// </summary>
+    private void OnDisable()
+    {
+        StopLaser();
     }
 
     #region Duplicate Prevention
@@ -609,7 +624,21 @@ public class CanonMovement : MonoBehaviour
             }
 
             droneHealth.damageSlowdownMultiplier = 0.70f;
-            droneHealth.TakeLaserDamage(Time.deltaTime);
+            droneHealth.SetLaserTargeted(true);
+
+            // Centralized Cannon attack timing & damage from DroneDirector
+            float attackInterval = (DroneDirector.Instance != null) ? DroneDirector.Instance.timeBetweenCannonAttacks : 0.5f;
+            float attackDamage = (DroneDirector.Instance != null) ? DroneDirector.Instance.cannonDamagePerAttack : 25f;
+
+            // Apply damage exactly once per attack interval, guarded against multiple colliders in the same frame
+            if (cannonAttackCooldownTimer <= 0f && Time.frameCount != lastDamagedFrame)
+            {
+                cannonAttackCooldownTimer = attackInterval;
+                lastDamagedFrame = Time.frameCount;
+
+                droneHealth.TakeDamage(attackDamage);
+                Debug.Log($"<color=yellow>[CanonMovement] Cannon attacked drone ({droneRoot.name}) dealing {attackDamage:F1} damage! Drone Health: {droneHealth.health:F1}/{droneHealth.maxHealth:F1}</color>");
+            }
 
             if (droneHealth.IsDestroyed)
             {

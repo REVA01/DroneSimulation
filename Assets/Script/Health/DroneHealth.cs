@@ -100,6 +100,29 @@ public class DroneHealth : MonoBehaviour
     }
 
     /// <summary>
+    /// Synchronizes drone maximum health capacity with central DroneDirector setting.
+    /// </summary>
+    private void Start()
+    {
+        if (DroneDirector.Instance != null && DroneDirector.Instance.droneMaxHealth > 0f)
+        {
+            maxHealth = DroneDirector.Instance.droneMaxHealth;
+            health = maxHealth;
+        }
+    }
+
+    /// <summary>
+    /// Synchronizes maximum health capacity dynamically with DroneDirector settings.
+    /// </summary>
+    public void SyncMaxHealth(float newMaxHealth)
+    {
+        if (newMaxHealth <= 0f) return;
+        float ratio = maxHealth > 0f ? health / maxHealth : 1.0f;
+        maxHealth = newMaxHealth;
+        health = Mathf.Clamp(newMaxHealth * ratio, 1f, maxHealth);
+    }
+
+    /// <summary>
     /// Tracks laser damage cooldowns, damage slowdown expiration, and health regeneration when unhit.
     /// </summary>
     private void Update()

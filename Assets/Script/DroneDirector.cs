@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Events;
+using UnityEngine.Serialization;
 
 public enum CombatPhase
 {
@@ -130,6 +131,51 @@ public class DroneBrain : MonoBehaviour
     private LineRenderer _tracerLine = null;
     private float _tracerTimer = 0f;
 
+    private void Update()
+    {
+        if (_tracerTimer > 0f)
+        {
+            _tracerTimer -= Time.deltaTime;
+            if (_tracerTimer <= 0f)
+            {
+                ClearCombatEffects();
+            }
+        }
+    }
+
+    private void OnDisable()
+    {
+        CompleteAttackAndRelease();
+    }
+
+    /// <summary>
+    /// Immediately disables the ranged tracer laser beam and resets visual effect timers.
+    /// </summary>
+    public void ClearCombatEffects()
+    {
+        _tracerTimer = 0f;
+        if (_tracerLine != null)
+        {
+            _tracerLine.enabled = false;
+        }
+    }
+
+    /// <summary>
+    /// Cleans up individual attack state, clears combat effects, resets cooldowns, and releases director attack token.
+    /// </summary>
+    public void CompleteAttackAndRelease()
+    {
+        isAttacking = false;
+        _attackTimeoutTimer = 0f;
+        currentAttackCooldown = 0f;
+        retreatTimer = 0f;
+        ClearCombatEffects();
+        if (director != null)
+        {
+            director.ReleaseAttackToken(this);
+        }
+    }
+
     // Initializes references to the director and squad member.
     public void Initialize(DroneDirector directorInstance, DroneDirector.DroneSquadMember squadMember)
     {
@@ -145,6 +191,13 @@ public class DroneBrain : MonoBehaviour
         _decisionTimer = UnityEngine.Random.Range(0.05f, personality != null ? personality.decisionInterval : 0.5f);
         _currentOrbitAngleDeg = UnityEngine.Random.Range(0f, 360f);
         _swayPhase = UnityEngine.Random.Range(0f, 100f);
+
+        // Stagger initial attack cooldown so squad members do not all strike simultaneously at combat start
+        if (personality != null)
+        {
+            float baseCd = personality.attackCooldown;
+            currentAttackCooldown = UnityEngine.Random.Range(0.5f, Mathf.Max(1.0f, baseCd));
+        }
 
         if (personality != null && member != null && member.droneObject != null)
         {
@@ -166,7 +219,7 @@ public class DroneBrain : MonoBehaviour
         personality.strikeDistance = director.attackDistance;
         personality.decisionInterval = Mathf.Max(0.1f, director.decisionInterval * personality.reactionMultiplier);
         personality.reactionTime = Mathf.Max(0.05f, director.reactionTime * personality.reactionMultiplier);
-        personality.attackCooldown = Mathf.Max(1.0f, director.attackCooldown * personality.cooldownMultiplier);
+        personality.attackCooldown = Mathf.Max(0.05f, director.timeBetweenDroneAttacks * personality.cooldownMultiplier);
         personality.orbitRadius = Mathf.Max(3.0f, director.orbitRadius * personality.distanceMultiplier);
         personality.preferredAltitude = Mathf.Clamp(director.hoverHeight + personality.altitudeOffset, director.minAltitude, director.maxAltitude);
         personality.retreatDistance = director.repositionDistance * personality.distanceMultiplier;
@@ -255,7 +308,6 @@ public class DroneBrain : MonoBehaviour
             case DroneAIArchetype.AggressiveChaser:
                 personality.aggression = Mathf.Clamp01(personality.aggression + 0.2f);
                 personality.preferredDistance = Mathf.Max(3.0f, personality.preferredDistance - 2f);
-                personality.attackCooldown = Mathf.Max(1.5f, personality.attackCooldown - 1.0f);
                 personality.attackSpeed = Mathf.Max(personality.attackSpeed, director.attackSpeed * 1.1f);
                 currentState = DroneAIState.Approaching;
                 break;
@@ -292,8 +344,11 @@ public class DroneBrain : MonoBehaviour
         if (director == null || member == null || member.followTarget == null || member.tacticalWaypoint == null)
             return;
 
-        if (currentState == DroneAIState.PostCombat)
+        if (currentState == DroneAIState.PostCombat || (director != null && director.IsTargetEliminated))
+        {
+            ClearCombatEffects();
             return;
+        }
 
         if (personality == null)
         {
@@ -329,6 +384,12 @@ public class DroneBrain : MonoBehaviour
         // 2. Attack tracking & proximity check
         if (currentState == DroneAIState.Attacking)
         {
+            if (target == null || !target.gameObject.activeInHierarchy || (director != null && director.IsTargetEliminated))
+            {
+                CancelAttack();
+                return;
+            }
+
             isAttacking = true;
             _attackTimeoutTimer += dt;
 
@@ -445,7 +506,10 @@ public class DroneBrain : MonoBehaviour
 
     private void EvaluateTacticalDecision(Transform target)
     {
-        if (target == null || currentState == DroneAIState.Attacking || currentState == DroneAIState.Retreating)
+        if (target == null || !target.gameObject.activeInHierarchy || currentState == DroneAIState.Attacking || currentState == DroneAIState.Retreating || currentState == DroneAIState.PostCombat)
+            return;
+
+        if (director != null && director.IsTargetEliminated)
             return;
 
         bool canAttack = (currentAttackCooldown <= 0f);
@@ -476,8 +540,12 @@ public class DroneBrain : MonoBehaviour
                     float dist = Vector3.Distance(transform.position, target.position);
                     if (dist <= personality.rangedAttackDistance)
                     {
-                        FireRangedBurst(target);
-                        currentAttackCooldown = director.rangedAttackCooldown + UnityEngine.Random.Range(-0.4f, 0.4f);
+                        if (director.TryAcquireAttackToken(this))
+                        {
+                            FireRangedBurst(target);
+                            currentAttackCooldown = personality.attackCooldown;
+                            director.ReleaseAttackToken(this);
+                        }
                     }
                 }
                 else if (canAttack && UnityEngine.Random.value < (personality.aggression * 0.4f))
@@ -537,6 +605,11 @@ public class DroneBrain : MonoBehaviour
 
     private void StartAttack()
     {
+        if (director != null && director.IsTargetEliminated)
+        {
+            director.ReleaseAttackToken(this);
+            return;
+        }
         currentState = DroneAIState.Attacking;
         _attackTimeoutTimer = 0f;
     }
@@ -548,8 +621,11 @@ public class DroneBrain : MonoBehaviour
     public void OnStrikeDelivered()
     {
         currentState = DroneAIState.Retreating;
-        retreatTimer = personality != null ? personality.retreatDuration : 2.5f;
-        currentAttackCooldown = personality != null ? personality.attackCooldown : 4.5f;
+        float baseCooldown = personality != null ? personality.attackCooldown : 5.0f;
+        float baseRetreat = personality != null ? personality.retreatDuration : 2.5f;
+        // Clamp retreat duration so rapid attack cooldowns are not blocked by prolonged retreats
+        retreatTimer = Mathf.Min(baseRetreat, Mathf.Max(0.2f, baseCooldown * 0.6f));
+        currentAttackCooldown = baseCooldown;
     }
 
     public void CancelAttack()
@@ -562,13 +638,8 @@ public class DroneBrain : MonoBehaviour
         retreatTimer = 1.5f;
     }
 
-    private void FireRangedBurst(Transform target)
+    private void EnsureTracerLine()
     {
-        if (target == null) return;
-
-        Vector3 startPos = transform.position;
-        Vector3 targetPos = target.position;
-
         if (_tracerLine == null)
         {
             _tracerLine = gameObject.GetComponent<LineRenderer>();
@@ -587,23 +658,37 @@ public class DroneBrain : MonoBehaviour
             }
             _tracerLine.startColor = new Color(1f, 0.5f, 0.1f, 0.9f);
             _tracerLine.endColor = new Color(1f, 0.8f, 0.2f, 0.9f);
+            _tracerLine.enabled = false;
         }
+    }
 
+    private void FireRangedBurst(Transform target)
+    {
+        if (target == null || !target.gameObject.activeInHierarchy) return;
+        if (director != null && director.IsTargetEliminated) return;
+        if (currentState == DroneAIState.PostCombat) return;
+
+        Vector3 startPos = transform.position;
+        Vector3 targetPos = target.position;
+
+        EnsureTracerLine();
         _tracerLine.enabled = true;
         _tracerLine.SetPosition(0, startPos);
         _tracerLine.SetPosition(1, targetPos);
-        _tracerTimer = 0.15f;
+        _tracerTimer = 0.12f;
 
         CanonHealth canonHealth = target.GetComponentInParent<CanonHealth>() ?? target.GetComponentInChildren<CanonHealth>();
         if (canonHealth != null)
         {
-            canonHealth.TakeDamage(1);
+            float dmg = (director != null) ? director.droneDamagePerAttack : 10.0f;
+            canonHealth.TakeDamage(dmg);
             if (canonHealth.IsDestroyed)
             {
                 if (director != null)
                 {
-                    director.ExecuteDroneStrike(this, target);
+                    director.OnFinalAttackDelivered(this, target, 0.12f);
                 }
+                return;
             }
         }
     }
@@ -748,9 +833,28 @@ public class DroneDirector : MonoBehaviour
     public float aimAccuracy = 0.9f;
 
     // =========================================================================
-    // 6. ATTACK
+    // 6. ATTACK & DAMAGE CONFIGURATION
     // =========================================================================
-    [Header("Attack")]
+    [Header("Drone Attack & Timing Settings")]
+    [FormerlySerializedAs("attackCooldown")]
+    [Tooltip("Delay / cooldown in seconds between attacks for an individual drone (e.g. 5.0s, 0.5s, 10.0s).")]
+    public float timeBetweenDroneAttacks = 5.0f;
+    [Tooltip("Damage dealt to the target by an individual drone per attack (melee strike or ranged burst).")]
+    public float droneDamagePerAttack = 10.0f;
+
+    [Header("Cannon Attack & Timing Settings")]
+    [Tooltip("Delay / cooldown in seconds between consecutive cannon attacks (e.g. 0.5s).")]
+    public float timeBetweenCannonAttacks = 0.5f;
+    [Tooltip("Damage dealt to the targeted drone per cannon attack pulse (e.g. 25.0).")]
+    public float cannonDamagePerAttack = 25.0f;
+
+    [Header("Health & Durability Settings")]
+    [Tooltip("Maximum health capacity for the cannon.")]
+    public float cannonMaxHealth = 100.0f;
+    [Tooltip("Maximum health capacity for each drone.")]
+    public float droneMaxHealth = 200.0f;
+
+    [Header("Combat & Tactical Engagement")]
     [Tooltip("Contact or strike initiation distance for melee dive attacks.")]
     public float attackDistance = 2.5f;
     [Tooltip("Minimum standoff distance before attack initiation.")]
@@ -761,8 +865,6 @@ public class DroneDirector : MonoBehaviour
     public float repositionDistance = 8.0f;
     [Tooltip("Radius of orbit circle for circling and distraction maneuvers.")]
     public float orbitRadius = 8.0f;
-    [Tooltip("Base cooldown in seconds between attacks for an individual drone.")]
-    public float attackCooldown = 4.5f;
     [Tooltip("Minimum delay in seconds between any two drone strikes squad-wide.")]
     [Min(0f)]
     public float globalAttackCooldown = 0.8f;
@@ -776,6 +878,15 @@ public class DroneDirector : MonoBehaviour
     public float aggression = 0.6f;
     [Tooltip("Enable ranged laser tracer visual effects during combat.")]
     public bool allowRangedVisuals = true;
+
+    // Property aliases for full Inspector & script compatibility
+    public float attackCooldown { get => timeBetweenDroneAttacks; set => timeBetweenDroneAttacks = value; }
+    public float timeBetweenAttacks { get => timeBetweenDroneAttacks; set => timeBetweenDroneAttacks = value; }
+    public float attackDelay { get => timeBetweenDroneAttacks; set => timeBetweenDroneAttacks = value; }
+    public float droneAttackDelay { get => timeBetweenDroneAttacks; set => timeBetweenDroneAttacks = value; }
+    public float droneAttackDamage { get => droneDamagePerAttack; set => droneDamagePerAttack = value; }
+    public float cannonAttackDelay { get => timeBetweenCannonAttacks; set => timeBetweenCannonAttacks = value; }
+    public float cannonAttackDamage { get => cannonDamagePerAttack; set => cannonDamagePerAttack = value; }
 
     // =========================================================================
     // 7. PID / FLIGHT CONTROL
@@ -994,6 +1105,7 @@ public class DroneDirector : MonoBehaviour
     private TacticalFormationProfile lastFormationProfile;
     private bool distractorRoleToggle = false;
     private bool targetEliminated = false;
+    public bool IsTargetEliminated => targetEliminated;
     private bool hadActiveTarget = false;
     private Vector3 lastKnownTargetPos;
     private Vector3 lastKnownTargetForward = Vector3.forward;
@@ -1020,7 +1132,8 @@ public class DroneDirector : MonoBehaviour
     {
         if (brain == null) return false;
         if (_activeAttackers.Contains(brain)) return true;
-        if (Time.time - _lastGlobalStrikeTime < globalAttackCooldown) return false;
+        float effectiveGlobalDelay = Mathf.Min(globalAttackCooldown, Mathf.Max(0.1f, timeBetweenDroneAttacks * 0.5f));
+        if (Time.time - _lastGlobalStrikeTime < effectiveGlobalDelay) return false;
         if (_activeAttackers.Count < maxConcurrentAttackers)
         {
             _activeAttackers.Add(brain);
@@ -1234,6 +1347,13 @@ public class DroneDirector : MonoBehaviour
         {
             member.brain.SyncFromDirector(this);
         }
+
+        // 5. Drone Health & Durability
+        DroneHealth health = member.droneObject.GetComponent<DroneHealth>();
+        if (health != null)
+        {
+            health.SyncMaxHealth(droneMaxHealth);
+        }
     }
 
     /// <summary>
@@ -1246,6 +1366,15 @@ public class DroneDirector : MonoBehaviour
             if (squad[i] != null && squad[i].droneObject != null)
             {
                 ApplyDirectorSettingsToDrone(squad[i]);
+            }
+        }
+
+        if (target != null)
+        {
+            CanonHealth canonHealth = target.GetComponentInParent<CanonHealth>() ?? target.GetComponentInChildren<CanonHealth>();
+            if (canonHealth != null)
+            {
+                canonHealth.SyncMaxHealth(cannonMaxHealth);
             }
         }
 
@@ -1290,7 +1419,12 @@ public class DroneDirector : MonoBehaviour
             hash = hash * 31 + attackDistance.GetHashCode();
             hash = hash * 31 + repositionDistance.GetHashCode();
             hash = hash * 31 + orbitRadius.GetHashCode();
-            hash = hash * 31 + attackCooldown.GetHashCode();
+            hash = hash * 31 + timeBetweenDroneAttacks.GetHashCode();
+            hash = hash * 31 + droneDamagePerAttack.GetHashCode();
+            hash = hash * 31 + timeBetweenCannonAttacks.GetHashCode();
+            hash = hash * 31 + cannonDamagePerAttack.GetHashCode();
+            hash = hash * 31 + cannonMaxHealth.GetHashCode();
+            hash = hash * 31 + droneMaxHealth.GetHashCode();
             hash = hash * 31 + velocityKp.GetHashCode();
             hash = hash * 31 + velocityKi.GetHashCode();
             hash = hash * 31 + velocityKd.GetHashCode();
@@ -1438,7 +1572,7 @@ public class DroneDirector : MonoBehaviour
 
         bool targetIsActive = (target != null && target.gameObject.activeInHierarchy);
 
-        if (targetIsActive)
+        if (targetIsActive && !targetEliminated)
         {
             hadActiveTarget = true;
             lastKnownTargetPos = target.position;
@@ -1466,6 +1600,7 @@ public class DroneDirector : MonoBehaviour
                     lastKnownTargetForward = target.forward;
                 }
                 targetEliminated = true;
+                CleanupAllCombatStatesAndEffects();
                 SetupVictorySequence();
             }
 
@@ -1893,7 +2028,7 @@ public class DroneDirector : MonoBehaviour
     // Detects if any attacking drone has reached strike distance to the target.
     private void CheckPincerStrikeProximity()
     {
-        if (target == null || !target.gameObject.activeInHierarchy) return;
+        if (target == null || !target.gameObject.activeInHierarchy || targetEliminated) return;
 
         for (int i = 0; i < squad.Count; i++)
         {
@@ -1912,6 +2047,8 @@ public class DroneDirector : MonoBehaviour
     // Executes an attack strike on the target (cannon).
     private void ExecuteStrike(Transform attacker, Transform victim)
     {
+        if (victim == null || targetEliminated) return;
+
         lastKnownTargetPos = victim.position;
         lastKnownTargetForward = victim.forward;
 
@@ -1921,7 +2058,7 @@ public class DroneDirector : MonoBehaviour
 
         if (canonHealth != null)
         {
-            canonHealth.TakeDamage(1);
+            canonHealth.TakeDamage(droneDamagePerAttack);
 
             if (!canonHealth.IsDestroyed)
             {
@@ -1931,9 +2068,10 @@ public class DroneDirector : MonoBehaviour
             }
         }
 
-        // Cannon destroyed after 5 attacks (or if no CanonHealth is attached)
+        // Cannon destroyed after attacks (or if no CanonHealth is attached)
         targetEliminated = true;
         victim.gameObject.SetActive(false);
+        CleanupAllCombatStatesAndEffects();
         SetupVictorySequence();
     }
 
@@ -1944,7 +2082,14 @@ public class DroneDirector : MonoBehaviour
     /// </summary>
     public void ExecuteDroneStrike(DroneBrain attacker, Transform victim)
     {
-        if (victim == null || targetEliminated) return;
+        if (victim == null || targetEliminated)
+        {
+            if (attacker != null)
+            {
+                attacker.CompleteAttackAndRelease();
+            }
+            return;
+        }
 
         RecordGlobalStrike();
 
@@ -1956,7 +2101,7 @@ public class DroneDirector : MonoBehaviour
 
         if (canonHealth != null)
         {
-            canonHealth.TakeDamage(1);
+            canonHealth.TakeDamage(droneDamagePerAttack);
 
             if (!canonHealth.IsDestroyed)
             {
@@ -1971,9 +2116,73 @@ public class DroneDirector : MonoBehaviour
         }
 
         // Cannon destroyed!
+        OnFinalAttackDelivered(attacker, victim, 0f);
+    }
+
+    /// <summary>
+    /// Synchronizes the sequence immediately after the cannon/target is defeated:
+    /// 1. Lets the final attack action visibly complete (~0.12s for ranged burst, 0s for melee impact).
+    /// 2. Deactivates target victim and stops cannon laser.
+    /// 3. Extinguishes all drone tracer/VFX effects and releases all attack tokens.
+    /// 4. Immediately launches the end formation sequence without unnecessary cooldown delay.
+    /// </summary>
+    public void OnFinalAttackDelivered(DroneBrain attacker, Transform victim, float burstDuration)
+    {
+        if (targetEliminated && currentPhase == CombatPhase.PostCombatTraveling)
+        {
+            if (attacker != null) attacker.CompleteAttackAndRelease();
+            return;
+        }
+
         targetEliminated = true;
-        victim.gameObject.SetActive(false);
+        StartCoroutine(FinalAttackCompletionSequence(attacker, victim, burstDuration));
+    }
+
+    private System.Collections.IEnumerator FinalAttackCompletionSequence(DroneBrain attacker, Transform victim, float duration)
+    {
+        if (duration > 0f)
+        {
+            yield return new WaitForSeconds(duration);
+        }
+
+        if (victim != null)
+        {
+            lastKnownTargetPos = victim.position;
+            lastKnownTargetForward = victim.forward;
+            victim.gameObject.SetActive(false);
+        }
+
+        if (attacker != null)
+        {
+            attacker.CompleteAttackAndRelease();
+        }
+
+        CleanupAllCombatStatesAndEffects();
         SetupVictorySequence();
+    }
+
+    /// <summary>
+    /// Squad-wide cleanup: cancels attack states, extinguishes all LineRenderer tracers, resets attack cooldowns,
+    /// clears token allocations, and transitions all drones to PostCombat.
+    /// </summary>
+    public void CleanupAllCombatStatesAndEffects()
+    {
+        _activeAttackers.Clear();
+        for (int i = 0; i < squad.Count; i++)
+        {
+            if (squad[i] != null && squad[i].brain != null)
+            {
+                squad[i].brain.CompleteAttackAndRelease();
+                squad[i].brain.ClearCombatEffects();
+                squad[i].brain.currentState = DroneAIState.PostCombat;
+            }
+        }
+
+        CanonMovement canonMovement = FindAnyObjectByType<CanonMovement>();
+        if (canonMovement != null)
+        {
+            canonMovement.StopLaser();
+        }
     }
 
     /// <summary>
@@ -2024,14 +2233,7 @@ public class DroneDirector : MonoBehaviour
     {
         SelectFinalFormation();
 
-        _activeAttackers.Clear();
-        for (int i = 0; i < squad.Count; i++)
-        {
-            if (squad[i] != null && squad[i].brain != null)
-            {
-                squad[i].brain.currentState = DroneAIState.PostCombat;
-            }
-        }
+        CleanupAllCombatStatesAndEffects();
 
         victoryForward = (lastKnownTargetForward.sqrMagnitude > 0.001f) ? lastKnownTargetForward : Vector3.forward;
         victoryForward.y = 0f;
