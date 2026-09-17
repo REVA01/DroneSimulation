@@ -23,6 +23,7 @@ public class CanonHealth : MonoBehaviour
     public UnityEvent OnDestroyed;
 
     private float lastHitTime = -10f;
+    private int lastHitFrame = -1;
     private bool isDestroyed = false;
 
     public bool IsDestroyed => isDestroyed;
@@ -60,7 +61,7 @@ public class CanonHealth : MonoBehaviour
 
     /// <summary>
     /// Deals discrete attack strike damage to the cannon.
-    /// Enforces hit cooldown to prevent multiple overlapping hits in a single physics frame.
+    /// Debounces same-frame multi-collider hits while allowing fast independent drone strikes.
     /// </summary>
     /// <param name="damage">Number of health points to deduct.</param>
     /// <returns>True if damage was successfully registered, false if on cooldown or already destroyed.</returns>
@@ -68,12 +69,14 @@ public class CanonHealth : MonoBehaviour
     {
         if (isDestroyed) return false;
 
-        if (Time.time - lastHitTime < hitCooldown)
+        // Debounce only same-frame hits from multiple colliders on the same impact
+        if (Time.frameCount == lastHitFrame && Time.time - lastHitTime < 0.001f)
         {
             return false;
         }
 
         lastHitTime = Time.time;
+        lastHitFrame = Time.frameCount;
         currentHealth = Mathf.Max(0f, currentHealth - damage);
 
         Debug.Log($"<color=orange>[CanonHealth] Cannon attacked! Took {damage:F1} damage. Health remaining: {currentHealth:F1}/{maxHealth:F1}</color>");

@@ -42,18 +42,18 @@ public class DroneSpanSystem : MonoBehaviour
              "to find the nearest free slot. Increase this value when drones stack.")]
     [SerializeField] [Min(0.1f)] private float minSpawnDistance = 2.5f;
 
-    [Header("Continuous Lifecycle & Replacement Spawning")]
-    [Tooltip("If true, automatically spawns replacement drones whenever active drones are destroyed, maintaining the desired Drone Count.")]
-    [SerializeField] private bool autoRespawn = true;
+    [Header("Spawn Tracking & Lifecycle (Current Cycle)")]
+    [Tooltip("Total number of unique drones planned to spawn during this spawn cycle (set from Drone Count).")]
+    [SerializeField] private int totalPlannedSpawns = 0;
 
-    [Tooltip("Seconds to wait after a drone is destroyed before spawning its replacement.")]
-    [SerializeField] [Min(0f)] private float respawnDelay = 1.0f;
-
-    [Tooltip("Maximum total number of drones that can be spawned in this session (0 = unlimited continuous replenishment).")]
-    [SerializeField] [Min(0)] private int maxTotalSpawns = 0;
-
-    [Tooltip("Total number of drones spawned so far in the current session (Read Only).")]
+    [Tooltip("Total unique drones spawned so far in the current cycle (Read Only).")]
     [SerializeField] private int totalDronesSpawned = 0;
+
+    [Tooltip("Number of unspawned drones remaining to be spawned in the current cycle (Read Only).")]
+    [SerializeField] private int remainingSpawns = 0;
+
+    [Tooltip("Number of currently alive and active drones in the squad (Read Only).")]
+    [SerializeField] private int currentlyAlive = 0;
 
     // Public properties for external access
     public DroneDirector DroneDirector
@@ -116,34 +116,36 @@ public class DroneSpanSystem : MonoBehaviour
         set => minSpawnDistance = Mathf.Max(0.1f, value);
     }
 
+    // Auto-replacement is permanently disabled; properties kept for API compatibility
     public bool AutoRespawn
     {
-        get => autoRespawn;
-        set => autoRespawn = value;
+        get => false;
+        set { }
     }
 
     public float RespawnDelay
     {
-        get => respawnDelay;
-        set => respawnDelay = Mathf.Max(0f, value);
+        get => 0f;
+        set { }
     }
 
     public int MaxTotalSpawns
     {
-        get => maxTotalSpawns;
-        set => maxTotalSpawns = Mathf.Max(0, value);
+        get => totalPlannedSpawns;
+        set { }
     }
 
+    public int TotalPlannedSpawns => totalPlannedSpawns;
     public int TotalDronesSpawned => totalDronesSpawned;
-
-    public int ActiveDroneCount => droneDirector != null ? droneDirector.squad.Count : 0;
+    public int RemainingSpawns => Mathf.Max(0, totalPlannedSpawns - totalDronesSpawned);
+    public int CurrentlyAlive => droneDirector != null ? droneDirector.squad.Count : 0;
+    public int ActiveDroneCount => CurrentlyAlive;
 
     /// <summary>True while a sequential spawn coroutine is running.</summary>
     public bool IsSpawning => _spawnCoroutine != null;
 
     private int lastSpawnedCount = -1;
     private Coroutine _spawnCoroutine = null;
-    private Coroutine _respawnCoroutine = null;
 
     // Positions already claimed in the current spawn cycle – reset before each full spawn run
     private readonly List<Vector3> _reservedPositions = new List<Vector3>();
@@ -161,6 +163,20 @@ public class DroneSpanSystem : MonoBehaviour
         {
             SpawnDrones();
         }
+    }
+
+    private void Update()
+    {
+        UpdateTrackingTelemetry();
+    }
+
+    /// <summary>
+    /// Synchronizes live telemetry properties for Inspector display.
+    /// </summary>
+    public void UpdateTrackingTelemetry()
+    {
+        currentlyAlive = droneDirector != null ? droneDirector.squad.Count : 0;
+        remainingSpawns = Mathf.Max(0, totalPlannedSpawns - totalDronesSpawned);
     }
 
     /// <summary>
@@ -240,15 +256,14 @@ public class DroneSpanSystem : MonoBehaviour
             StopCoroutine(_spawnCoroutine);
             _spawnCoroutine = null;
         }
-        if (_respawnCoroutine != null)
-        {
-            StopCoroutine(_respawnCoroutine);
-            _respawnCoroutine = null;
-        }
 
-        // Always clear previous squad so we never get duplicate drones
+        // Always clear previous squad so we start a clean cycle
         ClearDrones();
+
+        // Initialize cycle tracking
+        totalPlannedSpawns = droneCount;
         totalDronesSpawned = 0;
+        UpdateTrackingTelemetry();
 
         // Resolve template once
         GameObject template = ResolveTemplate();
@@ -270,23 +285,16 @@ public class DroneSpanSystem : MonoBehaviour
     }
 
     /// <summary>
-    /// Spawns missing drones to reach the configured droneCount without destroying existing living drones.
-    /// Used for continuous replacement spawning when a drone is destroyed.
+    /// Spawns only the remaining unspawned drones required to reach totalPlannedSpawns in the current cycle.
+    /// Never spawns replacements for destroyed drones.
     /// </summary>
     public void SpawnMissingDrones()
     {
         EnsureDirectorConnection();
         if (droneDirector == null) return;
 
-        int active = droneDirector.squad.Count;
-        int needed = droneCount - active;
-        if (needed <= 0) return;
-
-        if (maxTotalSpawns > 0 && totalDronesSpawned >= maxTotalSpawns)
-        {
-            Debug.Log($"[DroneSpanSystem] Max total spawns reached ({totalDronesSpawned}/{maxTotalSpawns}). No more replacements will spawn.");
-            return;
-        }
+        int unspawned = totalPlannedSpawns - totalDronesSpawned;
+        if (unspawned <= 0) return;
 
         GameObject template = ResolveTemplate();
         if (template == null) return;
@@ -303,81 +311,71 @@ public class DroneSpanSystem : MonoBehaviour
         else
         {
             Vector3 centerPos = droneDirector.transform.position;
-            for (int i = 0; i < needed; i++)
+            for (int i = 0; i < unspawned; i++)
             {
-                if (maxTotalSpawns > 0 && totalDronesSpawned >= maxTotalSpawns) break;
                 int nextIndex = GetNextAvailableIndex();
                 Vector3 spawnPos = FindValidSpawnPosition(nextIndex, centerPos);
                 SpawnSingleDrone(template, nextIndex, spawnPos);
             }
             droneDirector.WireIgnoredColliders();
-            Debug.Log($"[DroneSpanSystem] Spawned {needed} replacement drones simultaneously. Active squad: {droneDirector.squad.Count}/{droneCount}");
+            UpdateTrackingTelemetry();
+            Debug.Log($"[DroneSpanSystem] Spawned {unspawned} remaining unspawned drones. Total spawned: {totalDronesSpawned}/{totalPlannedSpawns}. Active squad: {CurrentlyAlive}");
         }
     }
 
     /// <summary>
-    /// Adjusts active squad to match droneCount: spawns missing drones if count increased,
-    /// or removes excess drones if count decreased.
+    /// Adjusts totalPlannedSpawns to match droneCount when updated via Inspector.
+    /// If count increased, spawns only the remaining unspawned drones.
+    /// If count decreased below active squad, trims excess active drones.
     /// </summary>
     public void SyncToTargetCount()
     {
         EnsureDirectorConnection();
         if (droneDirector == null) return;
 
-        int active = droneDirector.squad.Count;
-        if (active < droneCount)
+        if (droneCount > totalPlannedSpawns)
         {
+            totalPlannedSpawns = droneCount;
+            UpdateTrackingTelemetry();
             SpawnMissingDrones();
         }
-        else if (active > droneCount)
+        else if (droneCount < totalPlannedSpawns)
         {
-            for (int i = active - 1; i >= droneCount; i--)
+            totalPlannedSpawns = droneCount;
+            int active = droneDirector.squad.Count;
+            if (active > droneCount)
             {
-                var member = droneDirector.squad[i];
-                if (member != null)
+                for (int i = active - 1; i >= droneCount; i--)
                 {
-                    if (member.tacticalWaypoint != null) Destroy(member.tacticalWaypoint.gameObject);
-                    if (member.droneObject != null) Destroy(member.droneObject);
+                    var member = droneDirector.squad[i];
+                    if (member != null)
+                    {
+                        if (member.tacticalWaypoint != null) Destroy(member.tacticalWaypoint.gameObject);
+                        if (member.droneObject != null) Destroy(member.droneObject);
+                    }
+                    droneDirector.squad.RemoveAt(i);
                 }
-                droneDirector.squad.RemoveAt(i);
+                droneDirector.WireIgnoredColliders();
             }
-            droneDirector.WireIgnoredColliders();
+            UpdateTrackingTelemetry();
         }
     }
 
     /// <summary>
     /// Notified by DroneDirector whenever an active squad drone is destroyed.
-    /// Cleans up position tracking and initiates replacement spawning if autoRespawn is enabled.
+    /// Cleans up position reservations and updates live telemetry.
+    /// Under no circumstances does this spawn a replacement or respawn the destroyed drone.
+    /// If a sequential spawn coroutine is currently waiting/running, it continues unaffected
+    /// until totalDronesSpawned == totalPlannedSpawns.
     /// </summary>
     public void OnDroneDestroyed(GameObject destroyedDrone)
     {
         SyncReservedPositions();
-
-        if (!autoRespawn || !Application.isPlaying) return;
-        if (maxTotalSpawns > 0 && totalDronesSpawned >= maxTotalSpawns) return;
-
-        // Start replacement routine
-        if (_respawnCoroutine != null)
-        {
-            StopCoroutine(_respawnCoroutine);
-            _respawnCoroutine = null;
-        }
-
-        _respawnCoroutine = StartCoroutine(RespawnDelayRoutine());
-    }
-
-    private IEnumerator RespawnDelayRoutine()
-    {
-        if (respawnDelay > 0f)
-        {
-            yield return new WaitForSeconds(respawnDelay);
-        }
-        _respawnCoroutine = null;
-        SpawnMissingDrones();
+        UpdateTrackingTelemetry();
     }
 
     /// <summary>
-    /// Destroys all spawned squad drones and waypoints, resets the spawn counter,
+    /// Destroys all spawned squad drones and waypoints, resets spawn counters,
     /// and stops any running spawn coroutines.
     /// </summary>
     [ContextMenu("Clear Drones")]
@@ -389,87 +387,88 @@ public class DroneSpanSystem : MonoBehaviour
             _spawnCoroutine = null;
         }
 
-        if (_respawnCoroutine != null)
-        {
-            StopCoroutine(_respawnCoroutine);
-            _respawnCoroutine = null;
-        }
-
         _reservedPositions.Clear();
 
         EnsureDirectorConnection();
-        if (droneDirector == null) return;
-
-        for (int i = droneDirector.squad.Count - 1; i >= 0; i--)
+        if (droneDirector != null)
         {
-            if (droneDirector.squad[i] != null)
+            for (int i = droneDirector.squad.Count - 1; i >= 0; i--)
             {
-                if (droneDirector.squad[i].tacticalWaypoint != null)
+                if (droneDirector.squad[i] != null)
                 {
-                    if (Application.isPlaying) Destroy(droneDirector.squad[i].tacticalWaypoint.gameObject);
-                    else DestroyImmediate(droneDirector.squad[i].tacticalWaypoint.gameObject);
-                }
+                    if (droneDirector.squad[i].tacticalWaypoint != null)
+                    {
+                        if (Application.isPlaying) Destroy(droneDirector.squad[i].tacticalWaypoint.gameObject);
+                        else DestroyImmediate(droneDirector.squad[i].tacticalWaypoint.gameObject);
+                    }
 
-                if (droneDirector.squad[i].droneObject != null)
-                {
-                    if (Application.isPlaying) Destroy(droneDirector.squad[i].droneObject);
-                    else DestroyImmediate(droneDirector.squad[i].droneObject);
+                    if (droneDirector.squad[i].droneObject != null)
+                    {
+                        if (Application.isPlaying) Destroy(droneDirector.squad[i].droneObject);
+                        else DestroyImmediate(droneDirector.squad[i].droneObject);
+                    }
                 }
             }
+
+            droneDirector.squad.Clear();
+            lastSpawnedCount = 0;
+            droneDirector.LastSpawnedCount = 0;
         }
 
-        droneDirector.squad.Clear();
+        totalPlannedSpawns = 0;
+        totalDronesSpawned = 0;
+        remainingSpawns = 0;
+        currentlyAlive = 0;
         lastSpawnedCount = 0;
-        if (droneDirector != null)
-            droneDirector.LastSpawnedCount = 0;
     }
 
     // ── Spawn Implementations ─────────────────────────────────────────────────
 
-    /// <summary>Mode 2 – Simultaneous (default): spawns every drone in a single frame.</summary>
+    /// <summary>Mode 2 – Simultaneous (default): spawns every remaining planned drone in a single frame.</summary>
     private void SpawnAllAtOnce(GameObject template)
     {
         Vector3 centerPos = droneDirector.transform.position;
         SyncReservedPositions();
 
-        for (int i = 0; i < droneCount; i++)
+        int toSpawn = totalPlannedSpawns - totalDronesSpawned;
+        for (int i = 0; i < toSpawn; i++)
         {
-            if (maxTotalSpawns > 0 && totalDronesSpawned >= maxTotalSpawns) break;
-            Vector3 spawnPos = FindValidSpawnPosition(i, centerPos);
-            SpawnSingleDrone(template, i, spawnPos);
+            int nextIndex = GetNextAvailableIndex();
+            Vector3 spawnPos = FindValidSpawnPosition(nextIndex, centerPos);
+            SpawnSingleDrone(template, nextIndex, spawnPos);
         }
 
         droneDirector.WireIgnoredColliders();
-        Debug.Log($"[DroneSpanSystem] Spawned {droneDirector.squad.Count} drones simultaneously.");
+        UpdateTrackingTelemetry();
+        Debug.Log($"[DroneSpanSystem] Spawned {totalDronesSpawned}/{totalPlannedSpawns} drones simultaneously. Active squad: {CurrentlyAlive}");
     }
 
-    /// <summary>Mode 1 – Sequential: spawns drones one by one with sequentialSpawnDelay seconds between each.</summary>
+    /// <summary>Mode 1 – Sequential: spawns drones one by one until totalDronesSpawned reaches totalPlannedSpawns.</summary>
     private IEnumerator SpawnSequentiallyRoutine(GameObject template)
     {
         Vector3 centerPos = droneDirector.transform.position;
 
-        while (droneDirector != null && droneDirector.squad.Count < droneCount)
+        while (droneDirector != null && totalDronesSpawned < totalPlannedSpawns)
         {
-            if (maxTotalSpawns > 0 && totalDronesSpawned >= maxTotalSpawns)
-                break;
-
             SyncReservedPositions();
 
             int nextIndex = GetNextAvailableIndex();
             Vector3 spawnPos = FindValidSpawnPosition(nextIndex, centerPos);
             SpawnSingleDrone(template, nextIndex, spawnPos);
-            Debug.Log($"[DroneSpanSystem] Spawned drone (index {nextIndex + 1}) sequentially. Active squad: {droneDirector.squad.Count}/{droneCount}");
+            UpdateTrackingTelemetry();
+            Debug.Log($"[DroneSpanSystem] Spawned drone ({totalDronesSpawned}/{totalPlannedSpawns}) sequentially. Active squad: {CurrentlyAlive}");
 
             droneDirector.WireIgnoredColliders();
 
-            if (droneDirector.squad.Count < droneCount && sequentialSpawnDelay > 0f)
+            if (totalDronesSpawned < totalPlannedSpawns && sequentialSpawnDelay > 0f)
             {
                 yield return new WaitForSeconds(sequentialSpawnDelay);
             }
         }
 
         _spawnCoroutine = null;
-        Debug.Log($"[DroneSpanSystem] Sequential spawn complete. Active squad: {droneDirector.squad.Count}/{droneCount}");
+        UpdateTrackingTelemetry();
+        Debug.Log($"[DroneSpanSystem] Sequential spawn complete. Total spawned: {totalDronesSpawned}/{totalPlannedSpawns}. Active squad: {CurrentlyAlive}");
     }
 
     // ── Shared per-drone setup ────────────────────────────────────────────────

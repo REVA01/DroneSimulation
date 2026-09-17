@@ -134,6 +134,8 @@ public class DroneNPCFollowTarget : MonoBehaviour
         bankAmount = director.bankAmount;
         maxBankAngle = director.maxBankAngle;
         steeringSmoothSpeed = director.steeringSmoothing;
+        requireTargetLock = false;
+        isTargetLocked = true;
     }
 
     /// <summary>
@@ -178,62 +180,61 @@ public class DroneNPCFollowTarget : MonoBehaviour
             return;
         }
 
-        // Target reached / arrived within stop distance: command stable hover
-        if (distance <= stopDistance)
+        float driveFactor = 0f;
+        if (distance > stopDistance)
         {
-            _currentMoveDir = Vector3.zero;
-            if (_droneInputs != null)
+            Vector3 desiredDir = toTarget.normalized;
+
+            float forwardDot = Vector3.Dot(transform.forward, desiredDir);
+            bool waypointBehind = forwardDot < 0f && distance < rayDistance * 2f;
+            if (waypointBehind)
             {
-                _droneInputs.SetAIInputs(0f, 0f, 0f, 0f);
+                _isAvoiding = false;
+                _avoidCommitTimer = 0f;
+                _currentMoveDir = desiredDir;
             }
-            return;
-        }
 
-        Vector3 desiredDir = toTarget.normalized;
+            Vector3 safeDir = GetSafeDirection(desiredDir);
+            if (safeDir.sqrMagnitude < 0.001f)
+                safeDir = desiredDir;
 
-        float forwardDot = Vector3.Dot(transform.forward, desiredDir);
-        bool waypointBehind = forwardDot < 0f && distance < rayDistance * 2f;
-        if (waypointBehind)
-        {
-            _isAvoiding = false;
-            _avoidCommitTimer = 0f;
-            _currentMoveDir = desiredDir;
-        }
+            if (_currentMoveDir.sqrMagnitude < 0.001f)
+            {
+                _currentMoveDir = safeDir;
+            }
+            else
+            {
+                float blendSpeed = waypointBehind ? steeringSmoothSpeed * 3f : steeringSmoothSpeed;
+                _currentMoveDir = Vector3.Slerp(_currentMoveDir, safeDir, blendSpeed * Time.deltaTime).normalized;
+            }
 
-        Vector3 safeDir = GetSafeDirection(desiredDir);
-        if (safeDir.sqrMagnitude < 0.001f)
-            safeDir = desiredDir;
+            float effectiveSpeed = moveSpeed;
+            if (_droneHealth == null)
+            {
+                _droneHealth = GetComponent<DroneHealth>() ?? GetComponentInParent<DroneHealth>() ?? GetComponentInChildren<DroneHealth>();
+            }
 
-        if (_currentMoveDir.sqrMagnitude < 0.001f)
-        {
-            _currentMoveDir = safeDir;
+            // Apply 30% speed reduction exclusively to the exact drone targeted by the laser; all others fly at 100% normal speed
+            if (_droneHealth != null && _droneHealth.IsTargetedByLaser)
+            {
+                effectiveSpeed *= 0.70f;
+            }
+
+            // Dynamic speed and arrival modulation
+            float maxSpeed = (_fcs != null && _fcs.maxForwardSpeed > 0f) ? _fcs.maxForwardSpeed : Mathf.Max(moveSpeed, 10f);
+            float cruiseSpeedFactor = Mathf.Clamp01(effectiveSpeed / maxSpeed);
+            float arrivalFactor = Mathf.Clamp01((distance - stopDistance) / Mathf.Max(stopDistance * 1.5f, 1.5f));
+            driveFactor = cruiseSpeedFactor * arrivalFactor;
         }
         else
         {
-            float blendSpeed = waypointBehind ? steeringSmoothSpeed * 3f : steeringSmoothSpeed;
-            _currentMoveDir = Vector3.Slerp(_currentMoveDir, safeDir, blendSpeed * Time.deltaTime).normalized;
+            _currentMoveDir = Vector3.zero;
         }
-
-        float effectiveSpeed = moveSpeed;
-        if (_droneHealth == null)
-        {
-            _droneHealth = GetComponent<DroneHealth>() ?? GetComponentInParent<DroneHealth>() ?? GetComponentInChildren<DroneHealth>();
-        }
-
-        // Apply 30% speed reduction exclusively to the exact drone targeted by the laser; all others fly at 100% normal speed
-        if (_droneHealth != null && _droneHealth.IsTargetedByLaser)
-        {
-            effectiveSpeed *= 0.70f;
-        }
-
-        // Dynamic speed and arrival modulation
-        float maxSpeed = (_fcs != null && _fcs.maxForwardSpeed > 0f) ? _fcs.maxForwardSpeed : Mathf.Max(moveSpeed, 10f);
-        float cruiseSpeedFactor = Mathf.Clamp01(effectiveSpeed / maxSpeed);
-        float arrivalFactor = Mathf.Clamp01((distance - stopDistance) / Mathf.Max(stopDistance * 1.5f, 1.5f));
-        float driveFactor = cruiseSpeedFactor * arrivalFactor;
 
         // Transform world-space avoidance direction into drone local frame for cyclic control (Pitch & Roll)
-        Vector3 localDir = transform.InverseTransformDirection(_currentMoveDir);
+        Vector3 localDir = (distance <= stopDistance || _currentMoveDir.sqrMagnitude < 0.001f)
+            ? Vector3.zero
+            : transform.InverseTransformDirection(_currentMoveDir);
         float pitch = Mathf.Clamp(localDir.z * driveFactor, -1f, 1f);
         float roll = Mathf.Clamp(localDir.x * driveFactor, -1f, 1f);
 

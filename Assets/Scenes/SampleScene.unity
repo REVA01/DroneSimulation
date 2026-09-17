@@ -439,7 +439,7 @@ MonoBehaviour:
   angularDamping: 1
   cruiseSpeed: 8
   approachSpeed: 8
-  attackSpeed: 4
+  attackSpeed: 3
   disengageSpeed: 5.5
   acceleration: 8
   stopDistance: 1.5
@@ -451,8 +451,8 @@ MonoBehaviour:
   maxBankAngle: 35
   bankAmount: 1.2
   steeringSmoothing: 8
-  hoverHeight: 4
-  minAltitude: 4
+  hoverHeight: 5
+  minAltitude: 5
   maxAltitude: 15
   maxClimbSpeed: 6
   target: {fileID: 1781402038380079}
@@ -461,17 +461,26 @@ MonoBehaviour:
   engagementDistance: 15
   targetSwitchingInterval: 5
   aimAccuracy: 0.9
+  minDroneAttackInterval: 5
+  maxDroneAttackInterval: 5
+  droneDamagePerAttack: 10
+  timeBetweenCannonAttacks: 0.25
+  cannonDamagePerAttack: 25
+  cannonMaxHealth: 100
+  droneMaxHealth: 100
   attackDistance: 2.5
   minAttackRange: 2
   maxAttackRange: 14
   repositionDistance: 8
   orbitRadius: 8
-  attackCooldown: 4.5
   globalAttackCooldown: 0.8
   maxConcurrentAttackers: 1
   fireRate: 1
   aggression: 0.6
   allowRangedVisuals: 1
+  lastAttackerName: None
+  totalSquadAttacksDelivered: 0
+  activeDroneAttackTimers: []
   velocityKp: 1.5
   velocityKi: 0.05
   velocityKd: 0.25
@@ -501,10 +510,10 @@ MonoBehaviour:
   retreatDurationRange: {x: 2, y: 3.2}
   autoSelectFormationByCount: 1
   finalFormationType: 0
-  formationSpacing: 4
-  vAngle: 70
-  vForwardSpacing: 2.5
-  vSideSpacing: 3
+  formationSpacing: 2
+  vAngle: 80
+  vForwardSpacing: 1.5
+  vSideSpacing: 2
   wingHeadingAngle: 0
   formationHeight: 3
   formationRotation: 0
@@ -585,17 +594,17 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::DroneSpanSystem
   droneDirector: {fileID: 393614897}
   dronePrefab: {fileID: 2064981992}
-  droneCount: 11
+  droneCount: 10
   spawnRadius: 6
   spawnHeight: 2.5
   spawnOnStart: 1
-  spawnMode: 0
+  spawnMode: 1
   sequentialSpawnDelay: 0.5
   minSpawnDistance: 2.5
-  autoRespawn: 1
-  respawnDelay: 1
-  maxTotalSpawns: 0
+  totalPlannedSpawns: 0
   totalDronesSpawned: 0
+  remainingSpawns: 0
+  currentlyAlive: 0
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
