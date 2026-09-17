@@ -11,10 +11,10 @@ public class DroneHealth : MonoBehaviour
 {
     [Header("Health Settings")]
     [Tooltip("Health of the drone. Can be controlled directly in the Inspector. When <= 0, drone is destroyed.")]
-    public float health = 200f;
+    public float health = 100f;
 
     [Tooltip("Maximum health of the drone.")]
-    public float maxHealth = 200f;
+    public float maxHealth = 100f;
 
     [Tooltip("Laser damage dealt per second.")]
     public float laserDamagePerSecond = 100f;
