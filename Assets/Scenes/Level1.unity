@@ -380,8 +380,8 @@ MonoBehaviour:
     Wrap: 1
     Recentering:
       Enabled: 1
-      Wait: 0.5
-      Time: 1
+      Wait: 1
+      Time: 2
     Restrictions: 0
   VerticalAxis:
     Value: 17.5
@@ -390,8 +390,8 @@ MonoBehaviour:
     Wrap: 0
     Recentering:
       Enabled: 1
-      Wait: 0.5
-      Time: 1
+      Wait: 1
+      Time: 2
     Restrictions: 0
   RadialAxis:
     Value: 1
@@ -400,8 +400,8 @@ MonoBehaviour:
     Wrap: 0
     Recentering:
       Enabled: 1
-      Wait: 0.5
-      Time: 1
+      Wait: 1
+      Time: 2
     Restrictions: 0
 --- !u!114 &189841587
 MonoBehaviour:
@@ -572,6 +572,10 @@ PrefabInstance:
     - target: {fileID: 4316500678787099566, guid: aa1471eb6b07f4a4d9319b530334f565, type: 3}
       propertyPath: maxClimbSpeed
       value: 8
+      objectReference: {fileID: 0}
+    - target: {fileID: 4316500678787099566, guid: aa1471eb6b07f4a4d9319b530334f565, type: 3}
+      propertyPath: droneMaxHealth
+      value: 100
       objectReference: {fileID: 0}
     - target: {fileID: 7095899209067523964, guid: aa1471eb6b07f4a4d9319b530334f565, type: 3}
       propertyPath: dronePrefab
