@@ -1,0 +1,207 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &9124472727817389022
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 402791414303329682}
+  - component: {fileID: 4316500678787099566}
+  - component: {fileID: 7095899209067523964}
+  m_Layer: 0
+  m_Name: Director
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &402791414303329682
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9124472727817389022}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 4.85, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &4316500678787099566
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9124472727817389022}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ad8e261670c91f345917a69e500dcdde, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::DroneDirector
+  maxForwardSpeed: 25
+  maxSideSpeed: 20
+  maxTiltAngle: 30
+  maxMotorForce: 10
+  droneMass: 1
+  linearDamping: 0.2
+  angularDamping: 1
+  cruiseSpeed: 8
+  approachSpeed: 8
+  attackSpeed: 3
+  disengageSpeed: 5.5
+  acceleration: 8
+  stopDistance: 1.5
+  brakingDistance: 3
+  turnSpeed: 6
+  maxYawRate: 90
+  maxPitchRate: 100
+  maxRollRate: 100
+  maxBankAngle: 35
+  bankAmount: 1.2
+  steeringSmoothing: 8
+  hoverHeight: 5
+  minAltitude: 5
+  maxAltitude: 15
+  maxClimbSpeed: 6
+  target: {fileID: 0}
+  targetTag: 
+  detectionRange: 50
+  engagementDistance: 15
+  targetSwitchingInterval: 5
+  aimAccuracy: 0.9
+  minDroneAttackInterval: 5
+  maxDroneAttackInterval: 5
+  droneDamagePerAttack: 10
+  timeBetweenCannonAttacks: 0.25
+  cannonDamagePerAttack: 25
+  cannonMaxHealth: 100
+  droneMaxHealth: 500
+  attackDistance: 2.5
+  minAttackRange: 2
+  maxAttackRange: 14
+  repositionDistance: 8
+  orbitRadius: 8
+  globalAttackCooldown: 0.8
+  maxConcurrentAttackers: 1
+  fireRate: 1
+  aggression: 0.6
+  allowRangedVisuals: 1
+  lastAttackerName: None
+  totalSquadAttacksDelivered: 0
+  activeDroneAttackTimers: []
+  velocityKp: 1.5
+  velocityKi: 0.05
+  velocityKd: 0.25
+  pitchAngleKp: 4
+  rollAngleKp: 4
+  rateKp: 0.8
+  rateKd: 0.05
+  yawRateKp: 2.5
+  altitudeKp: 3
+  enableAutonomousIndividualAI: 1
+  reactionTime: 0.2
+  decisionInterval: 0.5
+  minDroneSeparation: 5
+  separationRepulsionStrength: 3
+  weightAggressiveChaser: 25
+  weightRangedHarasser: 25
+  weightCirclerOrbiter: 25
+  weightFlanker: 15
+  weightOpportunist: 10
+  aggressionRange: {x: 0.25, y: 0.95}
+  speedMultiplierRange: {x: 0.85, y: 1.25}
+  distanceMultiplierRange: {x: 0.8, y: 1.2}
+  cooldownMultiplierRange: {x: 0.75, y: 1.3}
+  reactionTimeRange: {x: 0.1, y: 0.35}
+  altitudeOffsetRange: {x: -0.8, y: 1.2}
+  orbitSpeedRange: {x: 25, y: 50}
+  retreatDurationRange: {x: 2, y: 3.2}
+  autoSelectFormationByCount: 1
+  finalFormationType: 0
+  formationSpacing: 2
+  vAngle: 80
+  vForwardSpacing: 1.5
+  vSideSpacing: 2
+  wingHeadingAngle: 0
+  formationHeight: 3
+  formationRotation: 0
+  minGroundClearance: 2
+  groundCheckLayers:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  positionTolerance: 0.35
+  rotationTolerance: 4
+  formationSpeed: 8
+  formationDecelerationDistance: 3
+  finalAlignmentStrength: 1.6
+  formationTimeout: 12
+  cinematicHoldDuration: 0.1
+  currentPhase: 5
+  currentCombatFormation: 0
+  phaseTimer: 0
+  squad: []
+  followDistance: 10
+  followHeight: 5
+  followFormationSpacing: 4
+  followSpeed: 6.5
+  maxFollowSpeed: 11
+  followAcceleration: 7
+  followFormation: 0
+  randomizeFollowFormation: 1
+  chaseMode: 1
+  obstacleCheckDistance: 4
+  formationsBeforeAttack: 7
+  surroundFormationDuration: 2
+  currentFormationStep: 1
+  formationTransitionSpeed: 8
+  radialTransitionSpeed: 3.5
+  verticalTransitionSpeed: 2.5
+  spreadDuration: 2
+  distractDuration: 4
+  attackDuration: 3.5
+  disengageDuration: 1.5
+  minCombatSpeed: 2
+  currentAttackPattern: 1
+  formationSyncTimeTolerance: 0.5
+  minTravelSpeed: 5
+  maxTravelSpeed: 7.5
+  isMissionComplete: 0
+  OnMissionComplete:
+    m_PersistentCalls:
+      m_Calls: []
+  obstacleLayers:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  droneSpanSystem: {fileID: 0}
+--- !u!114 &7095899209067523964
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9124472727817389022}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 968842b8c5aef7c439f0fa72a4bf0eb3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::DroneSpanSystem
+  droneDirector: {fileID: 4316500678787099566}
+  dronePrefab: {fileID: 0}
+  droneCount: 10
+  spawnRadius: 6
+  spawnHeight: 2.5
+  spawnOnStart: 1
+  spawnMode: 1
+  sequentialSpawnDelay: 0.5
+  minSpawnDistance: 2.5
+  totalPlannedSpawns: 0
+  totalDronesSpawned: 0
+  remainingSpawns: 0
+  currentlyAlive: 0
