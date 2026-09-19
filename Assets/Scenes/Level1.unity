@@ -375,13 +375,13 @@ MonoBehaviour:
   RecenteringTarget: 2
   HorizontalAxis:
     Value: 0
-    Center: 0
+    Center: -0
     Range: {x: -180, y: 180}
     Wrap: 1
     Recentering:
-      Enabled: 0
-      Wait: 1
-      Time: 2
+      Enabled: 1
+      Wait: 0.5
+      Time: 1
     Restrictions: 0
   VerticalAxis:
     Value: 17.5
@@ -389,9 +389,9 @@ MonoBehaviour:
     Range: {x: -10, y: 45}
     Wrap: 0
     Recentering:
-      Enabled: 0
-      Wait: 1
-      Time: 2
+      Enabled: 1
+      Wait: 0.5
+      Time: 1
     Restrictions: 0
   RadialAxis:
     Value: 1
@@ -399,9 +399,9 @@ MonoBehaviour:
     Range: {x: 1, y: 1}
     Wrap: 0
     Recentering:
-      Enabled: 0
-      Wait: 1
-      Time: 2
+      Enabled: 1
+      Wait: 0.5
+      Time: 1
     Restrictions: 0
 --- !u!114 &189841587
 MonoBehaviour:
@@ -1440,8 +1440,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 4.81, y: 4.87, z: 4.54}
-  m_Center: {x: -0.1, y: -1.13, z: 0}
+  m_Size: {x: 2.21, y: 2.11, z: 2.25}
+  m_Center: {x: -0.1, y: 0, z: 0}
 --- !u!1 &1882369476
 GameObject:
   m_ObjectHideFlags: 0
